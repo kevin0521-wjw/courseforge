@@ -1,0 +1,13 @@
+{
+  "name": "courseforge",
+  "version": "0.1.0",
+  "description": "课表工坊 CourseForge - 大学生课程表平台（网页版 + Electron 桌面端）",
+  "scripts": {
+    "test": "node --test",
+    "check:dom": "node tools/check-dom.mjs",
+    "build:standalone": "node tools/build-standalone.mjs",
+    "start:web": "node tools/serve.mjs"
+  },
+  "keywords": ["timetable", "course-schedule", "electron", "零依赖"],
+  "license": "MIT"
+}

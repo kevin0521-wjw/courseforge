@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="课表工坊 CourseForge - 大学生自制课程表平台，网页版与桌面端，数据完全本地">
+  <title>课表工坊 CourseForge</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- 顶栏 -->
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-logo" aria-hidden="true">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h3M8 18h3M14 14h3"/></svg>
+      </span>
+      <div class="brand-text">
+        <h1>课表工坊</h1>
+        <span class="slogan">大学生自己的课程表</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span id="syncChip" class="chip">浏览器 · 本地保存</span>
+      <button class="btn btn-primary" data-action="add-course" title="添加课程">
+        <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        添加课程
+      </button>
+      <button class="btn btn-icon" data-action="open-settings" title="设置" aria-label="设置">
+        <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M19.4 4.6l-2.1 2.1M6.7 17.3l-2.1 2.1"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <!-- 今天要处理（置顶） -->
+    <section id="todayPanel" class="today-panel panel" aria-label="今日课程"></section>
+
+    <!-- 工具栏 -->
+    <section class="toolbar panel">
+      <div id="weekNav" class="toolbar-week"></div>
+      <div class="toolbar-right">
+        <div class="view-switch" role="tablist">
+          <button id="btnViewWeek" class="btn btn-switch active" data-action="view-week" role="tab" aria-label="周视图">周视图</button>
+          <button id="btnViewList" class="btn btn-switch" data-action="view-list" role="tab" aria-label="列表视图">列表</button>
+        </div>
+        <div class="tool-actions">
+          <button class="btn btn-ghost" data-action="export-json" title="导出 JSON 备份">导出备份</button>
+          <button class="btn btn-ghost" data-action="import-json" title="从 JSON 备份恢复">导入恢复</button>
+          <button class="btn btn-ghost" data-action="clear-sample" id="btnClearSample" hidden>清空示例</button>
+          <button class="btn btn-ghost danger-text" data-action="clear-all">清空数据</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 统计栏 -->
+    <section id="statsBar" aria-label="本周统计"></section>
+
+    <!-- 主视图：周网格 / 列表 -->
+    <section id="mainView" class="main-view"></section>
+
+    <footer class="app-footer">
+      CourseForge · 数据仅保存在本设备 · 记得定期「导出备份」
+    </footer>
+  </main>
+
+  <!-- 设置抽屉 -->
+  <div id="settingsPanel" class="settings-overlay" hidden>
+    <div class="settings-drawer" role="dialog" aria-label="设置">
+      <div class="drawer-head">
+        <h2>设置</h2>
+        <button class="btn btn-icon" data-action="close-settings" aria-label="关闭设置">
+          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="drawer-body">
+        <label class="field">
+          <span class="field-label">学期开始日期（建议选周一）</span>
+          <input type="date" id="settingsSemesterStart" name="settingsSemesterStart" required>
+        </label>
+        <label class="field">
+          <span class="field-label">学期总周数（1-30）</span>
+          <input type="number" id="settingsTotalWeeks" name="settingsTotalWeeks" min="1" max="30" step="1" required>
+        </label>
+        <label class="field">
+          <span class="field-label">每日节次数（1-14）</span>
+          <input type="number" id="settingsSectionsPerDay" name="settingsSectionsPerDay" min="1" max="14" step="1" required>
+        </label>
+
+        <div class="field">
+          <span class="field-label">作息时间表（只读，可通过备份文件自定义）</span>
+          <div id="sectionTimesPreview" class="section-times"></div>
+        </div>
+      </div>
+
+      <div class="drawer-foot">
+        <button class="btn btn-ghost" data-action="close-settings">取消</button>
+        <button class="btn btn-primary" data-action="save-settings">保存设置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 课程编辑弹窗 -->
+  <div id="modalOverlay" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <h2 id="modalTitle">添加课程</h2>
+        <button class="btn btn-icon" data-action="close-modal" aria-label="关闭">
+          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <form id="courseForm" novalidate>
+        <label class="field">
+          <span class="field-label">课程名称 *</span>
+          <input type="text" id="courseName" name="courseName" maxlength="30" placeholder="如：高等数学（上）" required>
+        </label>
+
+        <div class="field-row">
+          <label class="field">
+            <span class="field-label">任课老师</span>
+            <input type="text" id="courseTeacher" name="courseTeacher" maxlength="20" placeholder="选填">
+          </label>
+          <label class="field">
+            <span class="field-label">上课地点</span>
+            <input type="text" id="courseLocation" name="courseLocation" maxlength="30" placeholder="如：教学楼A301">
+          </label>
+        </div>
+
+        <div class="field-row">
+          <label class="field">
+            <span class="field-label">星期</span>
+            <select id="courseDay" name="courseDay">
+              <option value="1">周一</option>
+              <option value="2">周二</option>
+              <option value="3">周三</option>
+              <option value="4">周四</option>
+              <option value="5">周五</option>
+              <option value="6">周六</option>
+              <option value="7">周日</option>
+            </select>
+          </label>
+          <label class="field">
+            <span class="field-label">开始节次</span>
+            <input type="number" id="courseStart" name="courseStart" min="1" max="14" step="1" required>
+          </label>
+          <label class="field">
+            <span class="field-label">结束节次</span>
+            <input type="number" id="courseEnd" name="courseEnd" min="1" max="14" step="1" required>
+          </label>
+        </div>
+
+        <div class="field">
+          <span class="field-label">上课周次（点击选择/取消）</span>
+          <div class="parity-bar" id="parityBar"></div>
+          <div id="weeksGrid" class="weeks-grid"></div>
+        </div>
+
+        <div class="field">
+          <span class="field-label">课程颜色</span>
+          <div id="colorSwatches" class="swatches"></div>
+        </div>
+
+        <label class="field">
+          <span class="field-label">备注</span>
+          <input type="text" id="courseNote" name="courseNote" maxlength="50" placeholder="选填，如：需要带实验报告">
+        </label>
+
+        <div class="modal-foot">
+          <button type="button" class="btn btn-ghost danger-text" id="btnDeleteCourse" hidden>删除课程</button>
+          <span class="flex-spacer"></span>
+          <button type="button" class="btn btn-ghost" data-action="close-modal">取消</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 隐藏的导入文件选择器 -->
+  <input type="file" id="importFile" accept="application/json,.json" hidden>
+
+  <!-- 轻提示 -->
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="js/core.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/render.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

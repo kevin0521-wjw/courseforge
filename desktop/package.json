@@ -1,0 +1,28 @@
+{
+  "name": "courseforge-desktop",
+  "version": "0.1.0",
+  "description": "课表工坊 CourseForge 桌面端（Electron）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "build": {
+    "appId": "com.kevin0521.courseforge",
+    "productName": "课表工坊",
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "license": "MIT"
+}
