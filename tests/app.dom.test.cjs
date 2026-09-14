@@ -70,15 +70,17 @@ function bootDom(seedFn) {
       readFile(path.join(WEB, 'js', 'storage.js'), 'utf-8'),
       readFile(path.join(WEB, 'js', 'render.js'), 'utf-8'),
       readFile(path.join(WEB, 'js', 'parser.js'), 'utf-8'),
+      readFile(path.join(WEB, 'js', 'edu-html.js'), 'utf-8'),
       readFile(path.join(WEB, 'js', 'ics.js'), 'utf-8'),
       readFile(path.join(WEB, 'js', 'importer.js'), 'utf-8'),
       readFile(path.join(WEB, 'js', 'app.js'), 'utf-8')
-    ]).then(([core, storage, render, parser, ics, importer, app]) => {
+    ]).then(([core, storage, render, parser, eduHtml, ics, importer, app]) => {
       // 按依赖顺序执行（app.js 会因 readyState 非 loading 直接 init）
       w.eval(core);
       w.eval(storage);
       w.eval(render);
       w.eval(parser);
+      w.eval(eduHtml);
       w.eval(ics);
       w.eval(importer);
       w.eval(app);
@@ -444,6 +446,161 @@ D('数据迁移：v1 扁平结构自动升级为 v2 且不丢课程', () => {
     assert.ok(html.includes('迁移课B'));
     assert.equal(doc.getElementById('btnClearSample').hidden, true, '不应播种示例课程');
     assert.equal(doc.querySelectorAll('#semesterList .sem-row').length, 1);
+  });
+});
+
+// ==================== 教务系统直连（桌面端能力） ====================
+
+/** 教务系统课表页 fixture：网格型 + 页眉噪音 + iframe 里才是真课表 */
+const EDU_GRID_HTML = `<html><head><title>个人课表</title></head><body>
+<div class="head">上海大学 2026-2027 学年秋季学期 学生课表</div>
+<table>
+  <tr><td>节次</td><td>星期一</td><td>星期二</td><td>星期三</td><td>星期四</td><td>星期五</td></tr>
+  <tr><td>第1节</td><td rowspan="2">高等数学<br>张老师<br>东区一教101<br>1-16周</td>
+      <td colspan="4">&nbsp;</td></tr>
+  <tr><td>第2节</td><td colspan="4">&nbsp;</td></tr>
+  <tr><td>第3节</td><td colspan="4">&nbsp;</td></tr>
+  <tr><td>第3节</td><td colspan="4">&nbsp;</td>
+      </tr>
+  <tr><td>第5节</td><td colspan="4">&nbsp;</td></tr>
+  <tr><td>第5节</td><td colspan="4">&nbsp;</td></tr>
+</table>
+</body></html>`;
+
+/** 在 bootDom 之后注入桌面桥（模拟 Electron preload 暴露的能力） */
+function injectDesktop(w, over) {
+  const calls = { open: [], grab: 0, close: 0 };
+  w.CourseForgeDesktop = {
+    isDesktop: true,
+    platform: 'win32',
+    edu: {
+      open: (url) => { calls.open.push(url); return Promise.resolve(true); },
+      grab: () => { calls.grab++; return Promise.resolve(Object.assign({ ok: true, html: EDU_GRID_HTML }, over || {})); },
+      close: () => { calls.close++; return Promise.resolve(true); }
+    }
+  };
+  return calls;
+}
+
+/** 让挂起的 Promise 链跑完 */
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+D('教务直连：网页版给粘贴引导，不显示桌面操作区', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    doc.querySelector('[data-action="open-import"]').click();
+    doc.querySelector('[data-imp-tab="edu"]').click();
+
+    assert.equal(doc.querySelector('[data-imp-pane="edu"]').hidden, false, '应切到教务直连面板');
+    assert.equal(doc.getElementById('eduWebHint').hidden, false, '网页版必须给出可用的替代路径');
+    assert.equal(doc.getElementById('eduDesktopPane').hidden, true, '网页版不该出现只有桌面端才有的按钮');
+    assert.ok(/粘贴/.test(doc.getElementById('eduWebHint').textContent), '引导文案要指明改用粘贴文本');
+
+    // 引导按钮要能真的跳到粘贴页签，而不是死链
+    doc.querySelector('[data-action="edu-goto-text"]').click();
+    assert.equal(doc.querySelector('[data-imp-pane="text"]').hidden, false);
+    assert.equal(doc.querySelector('[data-imp-tab="text"]').classList.contains('active'), true);
+  });
+});
+
+D('教务直连：桌面端显示操作区，能读回页面并渲染确认表、入库', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    const calls = injectDesktop(w);
+
+    doc.querySelector('[data-action="open-import"]').click();
+    doc.querySelector('[data-imp-tab="edu"]').click();
+    assert.equal(doc.getElementById('eduWebHint').hidden, true, '桌面端不该显示网页版的引导');
+    assert.equal(doc.getElementById('eduDesktopPane').hidden, false);
+
+    // 打开教务系统：自动补 https:// 并记住网址
+    doc.getElementById('eduUrl').value = 'jwb.shu.edu.cn';
+    doc.querySelector('[data-action="edu-open"]').click();
+    return flush().then(() => {
+      assert.deepEqual(calls.open, ['https://jwb.shu.edu.cn'], '应自动补全协议');
+      assert.equal(w.localStorage.getItem('wb_courseforge_edu_url'), 'https://jwb.shu.edu.cn',
+        '网址应被记住，下次不用重填');
+
+      // 没填网址时应给出提示而不是静默失败
+      doc.getElementById('eduUrl').value = '';
+      doc.querySelector('[data-action="edu-open"]').click();
+      assert.equal(doc.getElementById('importStatus').textContent, '请先填写教务系统网址');
+      doc.getElementById('eduUrl').value = 'jwb.shu.edu.cn';
+
+      // 读取当前页 → 解析 → 渲染确认表
+      doc.querySelector('[data-action="edu-grab"]').click();
+      return flush();
+    }).then(() => {
+      const status = doc.getElementById('importStatus').textContent;
+      assert.ok(/已从教务系统识别出 \d+ 门课/.test(status), '状态栏应回报识别结果，实际: ' + status);
+
+      const table = doc.getElementById('importResult');
+      assert.ok(table.innerHTML.includes('高等数学'), '确认表应列出识别到的课程');
+      assert.ok(table.innerHTML.includes('张老师'), '教师应被识别');
+      assert.ok(table.innerHTML.includes('东区一教101'), '地点应被识别');
+
+      // 入库：勾选后导入，课表里应出现这门课
+      const before = doc.querySelectorAll('#mainView .cf-card').length;
+      const applyBtn = doc.querySelector('[data-action="import-apply"]');
+      assert.ok(applyBtn, '应有「导入所选」按钮');
+      applyBtn.click();
+      assert.ok(doc.querySelectorAll('#mainView .cf-card').length > before,
+        '导入后课表应多出课程卡片');
+      assert.ok(doc.getElementById('mainView').innerHTML.includes('高等数学'),
+        '导入的课程应出现在当前学期的课表里');
+    });
+  });
+});
+
+D('教务直连：没开教务窗口时读取，给明确提示而不是静默失败', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    w.CourseForgeDesktop = {
+      isDesktop: true,
+      edu: {
+        open: () => Promise.resolve(true),
+        grab: () => Promise.resolve({ ok: false, reason: 'nowindow' }),
+        close: () => Promise.resolve(true)
+      }
+    };
+    doc.querySelector('[data-action="open-import"]').click();
+    doc.querySelector('[data-imp-tab="edu"]').click();
+    doc.querySelector('[data-action="edu-grab"]').click();
+    return flush().then(() => {
+      const s = doc.getElementById('importStatus').textContent;
+      assert.ok(s.includes('还没有打开教务系统窗口'), '应提示先打开窗口，实际: ' + s);
+      // 不能把上一次的结果留在表里误导用户
+      assert.equal(doc.querySelectorAll('#importResult tr[data-idx]').length, 0);
+    });
+  });
+});
+
+D('教务直连：读取到非课表页面时明确说明，不产生垃圾数据', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    injectDesktop(w, { html: '<html><body><p>请先登录</p></body></html>' });
+    doc.querySelector('[data-action="open-import"]').click();
+    doc.querySelector('[data-imp-tab="edu"]').click();
+    doc.querySelector('[data-action="edu-grab"]').click();
+    return flush().then(() => {
+      const s = doc.getElementById('importStatus').textContent;
+      assert.ok(s.includes('没能从当前页面识别出课表'), '应说明识别失败的原因，实际: ' + s);
+      assert.equal(doc.querySelectorAll('#importResult tr[data-idx]').length, 0, '不应产生半成品数据');
+    });
+  });
+});
+
+D('教务直连：桌面端「去粘贴文本」与关闭窗口按钮可用', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    const calls = injectDesktop(w);
+    doc.querySelector('[data-action="open-import"]').click();
+    doc.querySelector('[data-imp-tab="edu"]').click();
+    doc.querySelector('[data-action="edu-close-window"]').click();
+    assert.equal(calls.close, 1, '关闭按钮应调用主进程');
+
+    doc.querySelector('[data-action="edu-goto-text"]').click();
+    assert.equal(doc.querySelector('[data-imp-pane="text"]').hidden, false);
   });
 });
 

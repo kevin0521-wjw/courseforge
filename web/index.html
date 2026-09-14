@@ -228,6 +228,7 @@
 
       <div class="import-tabs">
         <button class="btn btn-switch active" data-imp-tab="text">粘贴文本</button>
+        <button class="btn btn-switch" data-imp-tab="edu">教务直连</button>
         <button class="btn btn-switch" data-imp-tab="image">照片识别</button>
         <button class="btn btn-switch" data-imp-tab="pdf">PDF 导入</button>
       </div>
@@ -238,6 +239,27 @@
           <div class="import-hint-row">
             <span class="hint">支持：周一/星期一、第3-4节/3,4节、单双周、18:00-19:40 时间段等常见格式</span>
             <button class="btn btn-primary" data-action="import-parse-text">解析文本</button>
+          </div>
+        </div>
+
+        <div data-imp-pane="edu" hidden>
+          <!-- 桌面端：由主进程代取页面，绕开浏览器跨域限制 -->
+          <div id="eduDesktopPane" hidden>
+            <label class="field">
+              <span class="field-label">教务系统网址</span>
+              <input type="text" id="eduUrl" placeholder="例如 jwb.shu.edu.cn" autocomplete="off">
+            </label>
+            <div class="edu-actions">
+              <button class="btn btn-primary" data-action="edu-open">打开教务系统并登录</button>
+              <button class="btn btn-ghost" data-action="edu-grab">读取当前页课表</button>
+              <button class="btn btn-ghost" data-action="edu-close-window">关闭教务窗口</button>
+            </div>
+            <p class="hint">登录在独立窗口里完成，CourseForge 不接触你的账号密码；只有你点「读取当前页课表」时才读取那一页的内容。登录后请先进入课表页面再点读取。</p>
+          </div>
+          <!-- 网页版：浏览器跨域拿不到教务系统页面，引导走粘贴 -->
+          <div id="eduWebHint">
+            <p class="hint">网页版受浏览器同源策略限制，无法直接读取教务系统页面。请改用「粘贴文本」：在教务系统课表页按 Ctrl+A 全选、Ctrl+C 复制，粘贴过去点「解析文本」即可，识别效果完全相同。</p>
+            <button class="btn btn-primary" data-action="edu-goto-text">去粘贴文本</button>
           </div>
         </div>
 
@@ -319,6 +341,7 @@
   <script src="js/storage.js"></script>
   <script src="js/render.js"></script>
   <script src="js/parser.js"></script>
+  <script src="js/edu-html.js"></script>
   <script src="js/ics.js"></script>
   <script src="js/importer.js"></script>
   <script src="js/app.js"></script>

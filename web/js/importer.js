@@ -103,15 +103,9 @@
 
   // ==================== 解析入口 ====================
 
-  /** 文本 → parsedItems（补默认周次） */
-  function feedText(text) {
-    var settings = bridge ? bridge.getSettings() : {};
-    var total = (settings && settings.totalWeeks) || 16;
-    var r = CP.parseScheduleText(text, {
-      sectionTimes: settings && settings.sectionTimes,
-      totalWeeks: total
-    });
-    parsedItems = r.items.map(function (it) {
+  /** 把解析结果统一成待确认结构（补默认周次），feedText / feedEduHtml 共用 */
+  function toResultItems(items, total) {
+    return (items || []).map(function (it) {
       return {
         selected: true,
         name: it.name || '',
@@ -124,7 +118,127 @@
         raw: it.raw || ''
       };
     });
+  }
+
+  /** 文本 → parsedItems（补默认周次） */
+  function feedText(text) {
+    var settings = bridge ? bridge.getSettings() : {};
+    var total = (settings && settings.totalWeeks) || 16;
+    var r = CP.parseScheduleText(text, {
+      sectionTimes: settings && settings.sectionTimes,
+      totalWeeks: total
+    });
+    parsedItems = toResultItems(r.items, total);
     renderResults(r.warnings);
+  }
+
+  /**
+   * 教务系统页面 HTML → parsedItems
+   * 与 feedText 的区别：HTML 解析器已经知道星期/节次（来自表格的行列位置），
+   * 这里只负责补默认周次并落到统一的待确认结构，后续勾选/修改/入库完全复用同一条链路。
+   */
+  function feedEduHtml(html) {
+    if (!window.CourseForgeEdu) {
+      setStatus('教务解析模块未加载，请刷新页面重试');
+      return null;
+    }
+    var settings = bridge ? bridge.getSettings() : {};
+    var total = (settings && settings.totalWeeks) || 16;
+    var r = window.CourseForgeEdu.parseEduHtml(html, {
+      sectionTimes: settings && settings.sectionTimes,
+      totalWeeks: total
+    });
+    parsedItems = toResultItems(r.items, total);
+    renderResults(r.warnings);
+    return r;
+  }
+
+  // ==================== 教务系统直连（仅桌面端可用） ====================
+
+  var EDU_URL_KEY = 'wb_courseforge_edu_url';
+
+  /** 取桌面端桥；网页版返回 null（浏览器跨域拿不到教务系统页面） */
+  function desktopEdu() {
+    return (window.CourseForgeDesktop && window.CourseForgeDesktop.edu) || null;
+  }
+
+  /** 按运行环境切换「教务直连」面板：桌面端给操作区，网页版给粘贴引导 */
+  function syncEduPane() {
+    var webHint = $('eduWebHint');
+    var deskPane = $('eduDesktopPane');
+    if (!webHint || !deskPane) return;
+    var d = desktopEdu();
+    webHint.hidden = !!d;
+    deskPane.hidden = !d;
+    if (!d) return;
+    var input = $('eduUrl');
+    if (input && !input.value) {
+      try { input.value = localStorage.getItem(EDU_URL_KEY) || ''; } catch (e) { /* 隐私模式忽略 */ }
+    }
+  }
+
+  function onEduOpen() {
+    var d = desktopEdu();
+    if (!d) return;
+    var input = $('eduUrl');
+    var url = (input ? input.value : '').trim();
+    if (!url) { setStatus('请先填写教务系统网址'); return; }
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    try { localStorage.setItem(EDU_URL_KEY, url); } catch (e) { /* 忽略 */ }
+    setStatus('正在打开教务系统窗口…');
+    d.open(url).then(function (ok) {
+      setStatus(ok
+        ? '教务系统窗口已打开：请在那里登录并进入课表页面，然后回到这里点「读取当前页课表」'
+        : '打开教务系统窗口失败，请检查网址是否正确');
+    })['catch'](function (err) {
+      setStatus('打开失败：' + ((err && err.message) || '未知错误'));
+    });
+  }
+
+  function onEduGrab() {
+    var d = desktopEdu();
+    if (!d) return;
+    setStatus('正在读取教务系统页面…');
+    d.grab().then(function (res) {
+      if (!res || !res.ok) {
+        if (res && res.reason === 'nowindow') {
+          setStatus('还没有打开教务系统窗口，请先点「打开教务系统并登录」');
+        } else {
+          setStatus('读取失败：' + ((res && res.message) || '未知错误'));
+        }
+        return;
+      }
+      if (!res.html) {
+        setStatus('读取到的页面是空的，请确认已经登录并打开了课表页面');
+        return;
+      }
+      var r = feedEduHtml(res.html);
+      // feedEduHtml 返回 null 表示它已经给出了具体失败原因（如解析模块未加载），
+      // 这里必须直接返回，否则会被下面的笼统文案盖掉，用户看到的原因就是错的
+      if (!r) return;
+      if (!r.items.length) {
+        setStatus('没能从当前页面识别出课表，请确认课表已经显示出来（不是登录页/首页）');
+        return;
+      }
+      setStatus('已从教务系统识别出 ' + r.items.length + ' 门课（版面：' + layoutName(r.layout)
+        + '），请核对下方表格后点「导入所选」');
+    })['catch'](function (err) {
+      setStatus('读取失败：' + ((err && err.message) || '未知错误'));
+    });
+  }
+
+  function onEduCloseWindow() {
+    var d = desktopEdu();
+    if (!d) return;
+    d.close();
+    setStatus('已关闭教务系统窗口');
+  }
+
+  function layoutName(l) {
+    if (l === 'grid') return '课表网格';
+    if (l === 'transposed') return '课表网格（转置）';
+    if (l === 'list') return '课程列表';
+    return '未识别';
   }
 
   function defaultWeeks(total) {
@@ -351,6 +465,7 @@
     var ta = $('importText');
     if (ta) ta.value = '';
     switchTab('text');
+    syncEduPane(); // 提前判定运行环境，切到该页签时不会有一瞬间的错版
     var modal = $('importModal');
     if (modal) modal.hidden = false;
   }
@@ -369,6 +484,8 @@
     for (var j = 0; j < panes.length; j++) {
       panes[j].hidden = panes[j].getAttribute('data-imp-pane') !== name;
     }
+    // 「教务直连」的内容取决于运行环境（桌面端有桥 / 网页版没有），切进来时重新判定
+    if (name === 'edu') syncEduPane();
   }
 
   // ==================== 事件绑定 ====================
@@ -397,6 +514,12 @@
       if (action === 'import-pick-image') { var fi = $('importImage'); if (fi) fi.click(); return; }
       if (action === 'import-pick-pdf') { var fp = $('importPdf'); if (fp) fp.click(); return; }
       if (action === 'import-apply') { applySelected(); return; }
+
+      // 教务系统直连（仅桌面端；网页版这些按钮不会渲染出来）
+      if (action === 'edu-open') { onEduOpen(); return; }
+      if (action === 'edu-grab') { onEduGrab(); return; }
+      if (action === 'edu-close-window') { onEduCloseWindow(); return; }
+      if (action === 'edu-goto-text') { switchTab('text'); return; }
     });
 
     // 遮罩点击关闭
@@ -440,6 +563,9 @@
   window.CourseImporter = {
     mount: mount,
     open: openModal,
-    close: closeModal
+    close: closeModal,
+    // 供测试与桌面端集成使用：把教务系统页面 HTML 直接喂进导入链路
+    feedEduHtml: feedEduHtml,
+    switchTab: switchTab
   };
 })();

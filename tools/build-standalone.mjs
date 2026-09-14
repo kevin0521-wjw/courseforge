@@ -12,7 +12,16 @@ const OUT = join(ROOT, 'dist', 'CourseForge-standalone.html');
 
 const html = await readFile(join(WEB, 'index.html'), 'utf-8');
 const css = await readFile(join(WEB, 'css', 'style.css'), 'utf-8');
-const scripts = ['core.js', 'storage.js', 'render.js', 'parser.js', 'ics.js', 'importer.js', 'app.js'];
+
+// 脚本清单从 index.html 里按实际引用顺序派生，不手工维护。
+// 手工清单一旦忘记加新模块，内联就会漏掉（末尾的检查会报错，但原因不直观）；
+// 从 HTML 派生可以从根本上杜绝这种「加了文件忘了登记」的漂移。
+const scripts = [...html.matchAll(/<script src="js\/([\w.-]+)"><\/script>/g)].map((m) => m[1]);
+if (!scripts.length) {
+  console.error('错误：index.html 里没有找到任何 js/ 脚本引用');
+  process.exit(1);
+}
+
 let out = html.replace(
   /<link rel="stylesheet" href="css\/style.css">/,
   '<style>\n' + css + '\n</style>'

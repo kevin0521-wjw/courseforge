@@ -161,6 +161,9 @@
     if (/(楼|馆|室|厅|房|栋|校区|操场|场)/.test(t)) return true;
     if (/^[A-Za-z]{1,4}\d{2,4}$/.test(t)) return true; // BJ102 / D202
     if (/^\d{3,4}$/.test(t)) return true;               // 纯教室号 301
+    // 「教」单独不能当关键词（教育学/教育心理学都是课程名），必须带房间号才算：
+    // 东区一教101 / 一教101 / 教三301
+    if (/(?:教|楼|馆|室|厅|房|栋)[\u4e00-\u9fa5]{0,3}\d{1,4}[室A-Za-z]?$/.test(t)) return true;
     return false;
   }
 
@@ -237,6 +240,16 @@
       var tm = /(?:教师|老师|授课)[:：]\s*([^\s,;，]+)/.exec(rest);
       if (tm) teacherExplicit = tm[1];
 
+      // 显式地点标注：地点:东区一教101 / 教室:东区一教101
+      // 网格型课表与列表型课表由调用方明确知道哪一列/哪一行是地点，
+      // 用标注传进来比依赖启发式猜更可靠（如「东区一教101」这种写法容易漏判）。
+      var locationExplicit = '';
+      var lm = /(?:地点|教室|上课地点|授课地点)[:：]\s*([^\s,;，]+)/.exec(rest);
+      if (lm) {
+        locationExplicit = lm[1];
+        rest = rest.split(lm[0]).join(' '); // 从剩余文本里摘掉，避免污染课程名/教师
+      }
+
       // 节次识别：先标准节次 → 时间映射 → 紧凑兜底
       if (!sec) {
         timeSec = extractSectionsByTime(s, sectionTimes);
@@ -299,7 +312,7 @@
         items.push({
           name: name,
           teacher: teacherExplicit || parts.teacher || '',
-          location: parts.location || '',
+          location: locationExplicit || parts.location || '',
           day: days[di],
           startSection: sec ? sec.start : null,
           endSection: sec ? sec.end : null,
@@ -320,6 +333,15 @@
   return {
     parseScheduleText: parseScheduleText,
     parseWeeksSpec: parseWeeksSpec,
-    DAY_MAP: DAY_MAP
+    DAY_MAP: DAY_MAP,
+    // 供 edu-html.js（教务系统 HTML 课表解析）复用，避免重复实现同一套特征提取
+    normalizeLine: normalizeLine,
+    extractDays: extractDays,
+    extractWeeks: extractWeeks,
+    extractSections: extractSections,
+    extractSectionsByTime: extractSectionsByTime,
+    looksLikeLocation: looksLikeLocation,
+    looksLikeTeacher: looksLikeTeacher,
+    splitRest: splitRest
   };
 });

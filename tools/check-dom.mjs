@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path';
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const WEB = join(ROOT, 'web');
 const html = await readFile(join(WEB, 'index.html'), 'utf-8');
-const files = ['core.js', 'storage.js', 'render.js', 'parser.js', 'ics.js', 'importer.js', 'app.js'];
+const files = ['core.js', 'storage.js', 'render.js', 'parser.js', 'edu-html.js', 'ics.js', 'importer.js', 'app.js'];
 
 // HTML 中声明的所有 id
 const htmlIds = new Set();
@@ -134,4 +134,30 @@ if (cjkPunct) {
 
 const ruleCount = (stripped.match(/\{/g) || []).length;
 console.log(`CSS 结构检查通过：${ruleCount} 个规则块，大括号配对、无中文标点`);
+
+// ---- 桌面端 IPC 通道名一致性 ----
+// preload 里 ipcRenderer.invoke('x') 与 main 里 ipcMain.handle('x') 必须一一对应。
+// 通道名写错不会报错，只会让 Promise 永远挂着（按钮点了没反应），属于最难查的一类 bug。
+try {
+  const preload = await readFile(join(ROOT, 'desktop', 'preload.js'), 'utf-8');
+  const main = await readFile(join(ROOT, 'desktop', 'main.js'), 'utf-8');
+
+  const invoked = new Set([...preload.matchAll(/ipcRenderer\.invoke\(\s*['"]([\w:-]+)['"]/g)].map((m) => m[1]));
+  const handled = new Set([...main.matchAll(/ipcMain\.handle\(\s*['"]([\w:-]+)['"]/g)].map((m) => m[1]));
+
+  const orphanInvoke = [...invoked].filter((c) => !handled.has(c));
+  const orphanHandle = [...handled].filter((c) => !invoked.has(c));
+  if (orphanInvoke.length) {
+    console.error('检查失败：preload 调用了主进程没有注册的 IPC 通道（会永远等待）：');
+    for (const c of orphanInvoke) console.error('  - ' + c);
+    process.exit(1);
+  }
+  if (orphanHandle.length) {
+    console.warn(`提示：主进程注册了但页面未使用的 IPC 通道：${orphanHandle.join('、')}`);
+  }
+  console.log(`IPC 通道检查通过：${invoked.size} 个通道名在 preload 与 main 之间一一对应`);
+} catch (e) {
+  // desktop/ 缺失不算失败（比如只分发 web/ 的场景）
+  console.log('IPC 通道检查跳过：未找到 desktop/ 目录');
+}
 

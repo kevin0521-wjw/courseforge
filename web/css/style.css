@@ -966,6 +966,34 @@ input:focus, select:focus {
 
 .import-body { display: flex; flex-direction: column; gap: 10px; }
 
+/* 教务直连面板 */
+.edu-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+
+.edu-actions .btn { flex: 1 1 auto; justify-content: center; }
+
+#eduWebHint {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+#eduWebHint .hint {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--info-bg);
+  color: var(--info-text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+#eduDesktopPane .field { margin-bottom: 0; }
+
 #importText {
   width: 100%;
   box-sizing: border-box;
