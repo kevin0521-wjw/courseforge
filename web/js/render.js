@@ -45,7 +45,11 @@
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
     list: '<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
     grid: '<path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/>',
-    edit: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 3 21l.5-4.5L17 3z"/>'
+    edit: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 3 21l.5-4.5L17 3z"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+    moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+    monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+    calendarDown: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M12 13v5M9.5 15.5L12 18l2.5-2.5"/>'
   };
 
   function icon(name, size) {
@@ -62,10 +66,44 @@
     return colors[0];
   }
 
+  /**
+   * 颜色的 CSS 表达式：优先取主题变量（深色主题会覆盖 --c-xxx-bg / --c-xxx-main），
+   * 未定义时回落到浅色预设值 → 一套 HTML 同时适配明暗两套主题
+   */
+  function colorVars(key) {
+    var c = colorOf(key);
+    return {
+      key: c.key,
+      name: c.name,
+      bg: 'var(--c-' + c.key + '-bg, ' + c.bg + ')',
+      main: 'var(--c-' + c.key + '-main, ' + c.main + ')'
+    };
+  }
+
+  /** 'HH:MM' 文本（当前时间显示用） */
+  function hhmm(date) {
+    function p(n) { return n < 10 ? '0' + n : '' + n; }
+    return p(date.getHours()) + ':' + p(date.getMinutes());
+  }
+
+  /** 分钟数 → '35 分钟' / '1 小时 5 分钟' */
+  function humanMin(min) {
+    if (min == null) return '';
+    if (min < 60) return min + ' 分钟';
+    var h = Math.floor(min / 60);
+    var m = min % 60;
+    return h + ' 小时' + (m ? ' ' + m + ' 分钟' : '');
+  }
+
   /** JS Date 星期（0=周日）→ 业务星期（1=周一 … 7=周日） */
   function businessDay(date) {
     var d = date.getDay();
     return d === 0 ? 7 : d;
+  }
+
+  /** 当前设置下可见的星期数：关闭「显示周末」后只渲染周一到周五 */
+  function visibleDays(settings) {
+    return (settings && settings.showWeekend === false) ? 5 : 7;
   }
 
   // ==================== 周导航 ====================
@@ -78,7 +116,7 @@
   function renderWeekNav(displayWeek, settings, realWeek) {
     var total = settings.totalWeeks;
     var mon = CF.mondayOfWeek(settings.semesterStart, displayWeek);
-    var rangeText = mon ? md(mon) + ' - ' + md(CF.addDays(mon, 6)) : '';
+    var rangeText = mon ? md(mon) + ' - ' + md(CF.addDays(mon, visibleDays(settings) - 1)) : '';
     var isReal = displayWeek === realWeek;
     var html = '';
     html += '<div class="week-nav">';
@@ -106,6 +144,7 @@
 
     html += '<div class="today-head">';
     html += '<span class="today-title">' + icon('clock') + '今天 · ' + esc(dateText) + '</span>';
+    html += '<span class="today-clock" title="每分钟自动刷新">' + esc(hhmm(now)) + '</span>';
     if (week >= 1 && week <= settings.totalWeeks) {
       html += '<span class="chip">第 ' + week + ' 周</span>';
     }
@@ -127,15 +166,35 @@
       return html;
     }
 
+    // 实时提示条：下一节课倒计时 / 当前节次 / 今日结束
+    var next = CF.nextCourse(list, now, settings);
+    var curSection = CF.getCurrentSection(now, settings);
+    html += '<div class="today-live">';
+    if (next) {
+      html += icon('right', 14) + '<span>下一节 <b>' + esc(next.course.name) + '</b> · ' + esc(next.startTime) + ' 开始 · 还有 <b>' + humanMin(next.startInMin) + '</b></span>';
+    } else if (curSection > 0) {
+      html += icon('clock', 14) + '<span>第 ' + curSection + ' 节进行中</span>';
+    } else {
+      html += icon('clock', 14) + '<span>今天的课都上完了，收工！</span>';
+    }
+    html += '</div>';
+
     html += '<div class="today-cards">';
     for (var i = 0; i < list.length; i++) {
       var c = list[i];
       var status = CF.courseStatus(c, now, settings);
-      var color = colorOf(c.color);
-      html += '<div class="today-card status-' + status + '" style="border-left-color:' + color.main + '">';
+      var prog = CF.courseProgress(c, now, settings);
+      var color = colorVars(c.color);
+      html += '<div class="today-card status-' + status + '" data-color="' + esc(color.key) + '" style="border-left-color:' + color.main + '">';
       html += '<div class="tc-time">' + esc(CF.sectionRangeText(settings, c)) + '</div>';
       html += '<div class="tc-name">' + esc(c.name) + '</div>';
       html += '<div class="tc-sub">' + esc(c.location || '未填写教室') + (c.teacher ? ' · ' + esc(c.teacher) : '') + '</div>';
+      if (status === 'now' && prog.state === 'now') {
+        html += '<div class="tc-progress" role="progressbar" aria-valuenow="' + prog.percent + '" aria-valuemin="0" aria-valuemax="100" aria-label="上课进度"><span style="width:' + prog.percent + '%"></span></div>';
+        html += '<div class="tc-tip">已上 ' + prog.percent + '% · 还剩 <b>' + humanMin(prog.remainMin) + '</b></div>';
+      } else if (status === 'before' && prog.startInMin != null) {
+        html += '<div class="tc-tip">还有 <b>' + humanMin(prog.startInMin) + '</b>开始</div>';
+      }
       html += '<span class="status-chip st-' + status + '">' + STATUS_TEXT[status] + '</span>';
       html += '</div>';
     }
@@ -149,18 +208,26 @@
     var totalSections = 0;
     var courseSet = {};
     var day;
-    for (day = 1; day <= 7; day++) {
+    for (day = 1; day <= visibleDays(settings); day++) {
       var list = CF.getDayCourses(courses, week, day);
       for (var i = 0; i < list.length; i++) {
         totalSections += list[i].endSection - list[i].startSection + 1;
         courseSet[list[i].id] = true;
       }
     }
+    // 隐藏周末时，统计被折叠掉的周末课程数并显式提示，避免「课不见了」的误判
+    var hiddenWeekend = 0;
+    if (visibleDays(settings) < 7) {
+      for (var d2 = 6; d2 <= 7; d2++) hiddenWeekend += CF.getDayCourses(courses, week, d2).length;
+    }
     var conflicts = CF.detectConflicts(courses, week).length;
 
     var html = '<div class="stats">';
     html += '<span class="stat-item">本周 <b>' + totalSections + '</b> 节课</span>';
     html += '<span class="stat-item"><b>' + Object.keys(courseSet).length + '</b> 门课程</span>';
+    if (hiddenWeekend > 0) {
+      html += '<span class="chip chip-warn">周末还有 ' + hiddenWeekend + ' 门课被隐藏</span>';
+    }
     if (conflicts > 0) {
       html += '<span class="chip chip-danger">本周 ' + conflicts + ' 处时间冲突</span>';
     }
@@ -174,7 +241,7 @@
   // ==================== 周视图网格 ====================
 
   function renderCourseCard(course, settings, rows) {
-    var color = colorOf(course.color);
+    var color = colorVars(course.color);
     // 显示时夹在有效节次范围内，防止越界出格
     var start = Math.min(course.startSection, rows);
     var end = Math.min(course.endSection, rows);
@@ -183,7 +250,7 @@
     var height = 'calc(var(--row-h) * ' + (end - start + 1) + ' - 6px)';
     var titleParts = [course.name, CF.sectionRangeText(settings, course), course.location, course.teacher, CF.weeksText(course.weeks)];
     var html = '';
-    html += '<div class="cf-card" data-id="' + esc(course.id) + '" style="top:' + top + ';height:' + height + ';background:' + color.bg + ';border-left-color:' + color.main + '" title="' + esc(titleParts.filter(Boolean).join(' | ')) + '">';
+    html += '<div class="cf-card" data-id="' + esc(course.id) + '" data-color="' + esc(color.key) + '" style="top:' + top + ';height:' + height + ';background:' + color.bg + ';border-left-color:' + color.main + '" title="' + esc(titleParts.filter(Boolean).join(' | ')) + '">';
     html += '<div class="cf-card-name">' + esc(course.name) + '</div>';
     html += '<div class="cf-card-sub">' + esc(course.location || '') + '</div>';
     html += '</div>';
@@ -192,17 +259,19 @@
 
   function renderGrid(courses, displayWeek, settings, now) {
     var rows = settings.sectionsPerDay;
+    var dayCount = visibleDays(settings);
     var todayDay = businessDay(now);
-    var times = settings.sectionTimes;
+    var mon = CF.mondayOfWeek(settings.semesterStart, displayWeek);
+    // 列数随「显示周末」变化：直接算好轨道串内联，避免依赖 CSS 变量参与 repeat() 的兼容性
+    var gridCols = 'grid-template-columns:var(--time-w) repeat(' + dayCount + ',minmax(96px,1fr))';
 
     var html = '';
     html += '<div class="cf-scroll"><div class="cf-inner">';
 
     // 表头：星期 + 日期
-    html += '<div class="cf-gridhead">';
+    html += '<div class="cf-gridhead" style="' + gridCols + '">';
     html += '<div class="cf-corner"></div>';
-    for (var d = 1; d <= 7; d++) {
-      var mon = CF.mondayOfWeek(settings.semesterStart, displayWeek);
+    for (var d = 1; d <= dayCount; d++) {
       var date = mon ? CF.addDays(mon, d - 1) : null;
       html += '<div class="cf-dayhead' + (d === todayDay ? ' cf-today' : '') + '">';
       html += '<span>' + CF.DAY_NAMES[d - 1] + '</span>';
@@ -212,7 +281,7 @@
     html += '</div>';
 
     // 主体
-    html += '<div class="cf-gridbody" style="--rows:' + rows + '">';
+    html += '<div class="cf-gridbody" style="--rows:' + rows + ';' + gridCols + '">';
 
     // 时间列
     html += '<div class="cf-timecol">';
@@ -222,8 +291,8 @@
     }
     html += '</div>';
 
-    // 七天列
-    for (var day = 1; day <= 7; day++) {
+    // 星期列（默认 7 列，关闭周末后 5 列）
+    for (var day = 1; day <= dayCount; day++) {
       html += '<div class="cf-daycol">';
       // 空白格子（点击添加课程）
       for (var sec = 1; sec <= rows; sec++) {
@@ -247,10 +316,11 @@
   function renderList(courses, displayWeek, settings) {
     var html = '';
     var hasAny = false;
-    for (var day = 1; day <= 7; day++) {
+    var dayCount = visibleDays(settings);
+    var mon = CF.mondayOfWeek(settings.semesterStart, displayWeek);
+    for (var day = 1; day <= dayCount; day++) {
       var list = CF.getDayCourses(courses, displayWeek, day);
       if (list.length) hasAny = true;
-      var mon = CF.mondayOfWeek(settings.semesterStart, displayWeek);
       var date = mon ? CF.addDays(mon, day - 1) : null;
       html += '<section class="list-day">';
       html += '<h3>' + CF.DAY_NAMES[day - 1] + (date ? '<small class="muted"> ' + md(date) + '</small>' : '') + '</h3>';
@@ -259,8 +329,8 @@
       } else {
         for (var i = 0; i < list.length; i++) {
           var c = list[i];
-          var color = colorOf(c.color);
-          html += '<div class="list-row" style="border-left-color:' + color.main + '">';
+          var color = colorVars(c.color);
+          html += '<div class="list-row" data-color="' + esc(color.key) + '" style="border-left-color:' + color.main + '">';
           html += '<div class="lr-main">';
           html += '<div class="lr-time">' + esc(CF.sectionRangeText(settings, c)) + ' <small>第' + c.startSection + '-' + c.endSection + '节</small></div>';
           html += '<div class="lr-name">' + esc(c.name) + '</div>';
@@ -334,7 +404,11 @@
     esc: esc,
     icon: icon,
     colorOf: colorOf,
+    colorVars: colorVars,
+    hhmm: hhmm,
+    humanMin: humanMin,
     businessDay: businessDay,
+    visibleDays: visibleDays,
     renderWeekNav: renderWeekNav,
     renderToday: renderToday,
     renderStats: renderStats,

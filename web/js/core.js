@@ -289,6 +289,71 @@
     return 0;
   }
 
+  /** 当前时刻的当日分钟数（0-1439） */
+  function nowMinutes(date) {
+    return date.getHours() * 60 + date.getMinutes();
+  }
+
+  /** 课程的 [开始分钟, 结束分钟]；时间不完整时返回 null */
+  function courseMinutes(course, settings) {
+    var s = timeToMinutes(getSectionTime(settings, course.startSection).start);
+    var e = timeToMinutes(getSectionTime(settings, course.endSection).end);
+    if (s === null || e === null || e <= s) return null;
+    return { start: s, end: e };
+  }
+
+  /**
+   * 课程进度（今日课程进度条 / 倒计时用）
+   * 返回 { state, percent, remainMin, startInMin }
+   *  - state: 'unknown'(作息缺失) | 'before'(未开始) | 'now'(进行中) | 'done'(已结束)
+   *  - percent: 0-100，仅 'now' 有意义
+   *  - remainMin: 距下课分钟数（'now' 时有效）
+   *  - startInMin: 距上课分钟数（'before' 时有效）
+   */
+  function courseProgress(course, date, settings) {
+    var range = courseMinutes(course, settings);
+    if (!range) return { state: 'unknown', percent: 0, remainMin: null, startInMin: null };
+    var m = nowMinutes(date);
+    if (m < range.start) {
+      return { state: 'before', percent: 0, remainMin: null, startInMin: range.start - m };
+    }
+    if (m >= range.end) {
+      return { state: 'done', percent: 100, remainMin: 0, startInMin: null };
+    }
+    var total = range.end - range.start;
+    return {
+      state: 'now',
+      percent: Math.max(0, Math.min(100, Math.round((m - range.start) / total * 100))),
+      remainMin: range.end - m,
+      startInMin: null
+    };
+  }
+
+  /**
+   * 今日「下一节课」：返回 { course, startInMin, startTime }，没有则返回 null
+   * @param dayCourses 当天课程列表（应已按节次排序）
+   */
+  function nextCourse(dayCourses, date, settings) {
+    var m = nowMinutes(date);
+    var best = null;
+    for (var i = 0; i < (dayCourses || []).length; i++) {
+      var c = dayCourses[i];
+      var range = courseMinutes(c, settings);
+      if (!range) continue;
+      if (range.start <= m) continue; // 已开始或已结束
+      if (!best || range.start < best.startMin) {
+        best = { course: c, startMin: range.start };
+      }
+    }
+    if (!best) return null;
+    var t = getSectionTime(settings, best.course.startSection);
+    return {
+      course: best.course,
+      startInMin: best.startMin - m,
+      startTime: t.start || ''
+    };
+  }
+
   /** 课程状态：'before' 未开始 | 'now' 进行中 | 'done' 已结束 */
   function courseStatus(course, date, settings) {
     var s = getSectionTime(settings, course.startSection);
@@ -342,10 +407,13 @@
       semesterStart: null,
       totalWeeks: 20,
       sectionsPerDay: 12,
+      showWeekend: true,   // 是否显示周六/周日列
       sectionTimes: DEFAULT_SECTION_TIMES.map(function (t) {
         return { label: t.label, start: t.start, end: t.end };
       })
     };
+    // 只有显式传 false 才隐藏周末（缺省/undefined 一律视为显示，兼容旧数据）
+    if (raw.showWeekend === false) s.showWeekend = false;
     if (typeof raw.totalWeeks === 'number' && raw.totalWeeks >= 1 && raw.totalWeeks <= 30) {
       s.totalWeeks = Math.round(raw.totalWeeks);
     }
@@ -437,6 +505,10 @@
     getSectionTime: getSectionTime,
     sectionRangeText: sectionRangeText,
     getCurrentSection: getCurrentSection,
+    nowMinutes: nowMinutes,
+    courseMinutes: courseMinutes,
+    courseProgress: courseProgress,
+    nextCourse: nextCourse,
     courseStatus: courseStatus,
     normalizeCourse: normalizeCourse,
     normalizeSettings: normalizeSettings,

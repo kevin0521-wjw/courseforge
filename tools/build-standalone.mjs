@@ -12,11 +12,17 @@ const OUT = join(ROOT, 'dist', 'CourseForge-standalone.html');
 
 const html = await readFile(join(WEB, 'index.html'), 'utf-8');
 const css = await readFile(join(WEB, 'css', 'style.css'), 'utf-8');
-const scripts = ['core.js', 'storage.js', 'render.js', 'parser.js', 'importer.js', 'app.js'];
+const scripts = ['core.js', 'storage.js', 'render.js', 'parser.js', 'ics.js', 'importer.js', 'app.js'];
 let out = html.replace(
   /<link rel="stylesheet" href="css\/style.css">/,
   '<style>\n' + css + '\n</style>'
 );
+
+// PWA 资源无法内联（manifest / icon / service worker 都要求外部文件），
+// 单文件版直接移除相关声明：file:// 下本就不支持安装，避免产生无效请求
+out = out.replace(/^\s*<link rel="manifest"[^>]*>\s*$/m, '  <!-- 单文件版不含 PWA 安装能力（需要 PWA 请使用 web/ 目录部署的在线版） -->\n');
+out = out.replace(/^\s*<link rel="icon"[^>]*>\s*$/m, '');
+out = out.replace(/^\s*<link rel="apple-touch-icon"[^>]*>\s*$/m, '');
 
 for (const name of scripts) {
   const code = await readFile(join(WEB, 'js', name), 'utf-8');
@@ -32,7 +38,7 @@ for (const name of scripts) {
   out = out.replace(tag, '<script>\n' + code + '\n</script>');
 }
 
-if (/<link rel="stylesheet"|<script src=/.test(out)) {
+if (/<link rel="stylesheet"|<script src=|rel="manifest"/.test(out)) {
   console.error('错误：仍有未内联的外部资源引用');
   process.exit(1);
 }

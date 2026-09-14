@@ -17,11 +17,52 @@
   --warn-bg: #fdf0e0;
   --ok: #0e9f6e;
   --ok-bg: #e2f6ee;
+  --header-bg: rgba(255, 255, 255, .92);
+  --field-bg: #fafbfd;
+  --track: #e6ebf4;
+  --th-bg: #f6f8fc;
+  --info-bg: #eef3fd;
+  --info-text: #2b5cc4;
   --row-h: 56px;
   --time-w: 56px;
   --radius: 12px;
   --shadow: 0 1px 3px rgba(15, 23, 42, .08);
   --shadow-lg: 0 8px 30px rgba(15, 23, 42, .16);
+}
+
+/* 深色主题：只覆盖变量，组件样式零改动；
+   课程卡片显式写 var(--c-xxx-bg, 浅色值)，因此深色下自动换成暗底亮边 */
+html[data-theme="dark"] {
+  --bg: #0f131a;
+  --panel: #171c25;
+  --text: #e6eaf2;
+  --muted: #98a2b3;
+  --line: #262e3b;
+  --brand: #6f9dff;
+  --brand-bg: #1b2740;
+  --danger: #ff7b72;
+  --danger-bg: #3a2024;
+  --warn: #e6b455;
+  --warn-bg: #3a3120;
+  --ok: #45d69b;
+  --ok-bg: #16342a;
+  --header-bg: rgba(23, 28, 37, .94);
+  --field-bg: #1d232e;
+  --track: #2a3240;
+  --th-bg: #1d232e;
+  --info-bg: #1b2740;
+  --info-text: #9dbaff;
+  --shadow: 0 1px 3px rgba(0, 0, 0, .5);
+  --shadow-lg: 0 10px 34px rgba(0, 0, 0, .6);
+  --c-blue-bg: #1b2740;   --c-blue-main: #7aa5ff;
+  --c-green-bg: #14332a;  --c-green-main: #45d69b;
+  --c-orange-bg: #3a2b16; --c-orange-main: #f0a952;
+  --c-red-bg: #3c1f22;    --c-red-main: #ff7b72;
+  --c-purple-bg: #2b2244; --c-purple-main: #b18cff;
+  --c-teal-bg: #123333;   --c-teal-main: #4fd1c5;
+  --c-brown-bg: #33291a;  --c-brown-main: #d9a441;
+  --c-pink-bg: #3a2030;   --c-pink-main: #f472b6;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -57,7 +98,7 @@ body {
   gap: 12px;
   padding: 10px 20px;
   padding-top: calc(10px + env(safe-area-inset-top));
-  background: rgba(255, 255, 255, .92);
+  background: var(--header-bg);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
 }
@@ -521,6 +562,23 @@ body {
   gap: 10px;
 }
 
+/* 复选型字段：整行可点，点击区域 ≥44px */
+.field-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.field-check input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+.field-check .field-label { margin-bottom: 0; line-height: 1.4; color: var(--text); }
+
 input[type="text"],
 input[type="number"],
 input[type="date"],
@@ -740,12 +798,32 @@ input:focus, select:focus {
 
   .toolbar { flex-direction: column; align-items: stretch; }
   .toolbar-right { justify-content: space-between; }
-  .tool-actions .btn { flex: 1; justify-content: center; }
+
+  /* 7 个功能按钮挤在一行时中文会被逐字竖排（"导入课表"变四条竖排字），
+     窄屏改为三列网格并禁止换行，行数再多也能读 */
+  .tool-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+  .tool-actions .btn {
+    width: auto;
+    padding: 6px 8px;
+    white-space: nowrap;
+    justify-content: center;
+    font-size: 13px;
+  }
+  /* 「清空数据」是危险操作，独占一行与其它按钮拉开距离，降低误触 */
+  .tool-actions .danger-text { grid-column: 1 / -1; }
 
   .today-card { min-width: 100%; }
 
   .week-label { min-width: 0; }
   .week-total { display: none; }
+  /* 窄屏下换行不可避免，「回到本周」会自动落到第二行，右对齐看起来才像有意的次级操作 */
+  .week-nav { flex-wrap: wrap; }
+  .week-nav [data-action="this-week"] { margin-left: auto; }
 
   .list-row { flex-wrap: wrap; }
   .lr-side { flex-direction: row; width: 100%; justify-content: space-between; align-items: center; }
@@ -757,6 +835,40 @@ input:focus, select:focus {
     border-radius: 16px 16px 0 0;
     padding-bottom: calc(18px + env(safe-area-inset-bottom));
   }
+
+  /* ---- 触屏可用性硬指标（实测发现多处按钮仅 32~40px） ----
+     注意：.parity-bar .btn / .lr-actions .btn / .tool-actions .btn 是复合选择器，
+     优先级高于通用的 .btn，必须逐个列出才能生效。 */
+  .btn,
+  button,
+  .btn-switch,
+  .tool-actions .btn,
+  .parity-bar .btn,
+  .lr-actions .btn,
+  .week-btn,
+  .swatch { min-height: 44px; }
+
+  /* 图标按钮还得保证 44 宽，否则左右相邻时容易点错 */
+  .btn-icon,
+  .lr-actions .btn { min-width: 44px; }
+
+  /* 点击区域不小于 44×44 */
+  .swatch { min-width: 44px; }
+  .field-check { min-height: 48px; }
+
+  /* 表单控件字号不小于 16px：否则 iOS 聚焦时会自动放大整页。
+     这里必须用 !important —— #importText / .mode-select 等 ID/类选择器
+     优先级高于元素选择器，不加会被它们的 13~14px 覆盖掉。 */
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea { font-size: 16px !important; }
+
+  input:not([type="checkbox"]):not([type="radio"]),
+  select { min-height: 44px; }
+
+  /* 触屏没有 hover，靠 :active 给反馈 */
+  .btn:active,
+  button:active { filter: brightness(.94); }
 }
 
 /* ==================== 课表导入弹窗 ==================== */
@@ -782,9 +894,9 @@ input:focus, select:focus {
   font-size: 14px;
   line-height: 1.6;
   resize: vertical;
-  background: #fafbfd;
+  background: var(--field-bg);
 }
-#importText:focus { outline: 2px solid rgba(47, 111, 237, 0.35); border-color: #2f6fed; }
+#importText:focus { outline: 2px solid rgba(47, 111, 237, 0.35); border-color: var(--brand); }
 
 .import-hint-row {
   display: flex;
@@ -794,20 +906,20 @@ input:focus, select:focus {
   flex-wrap: wrap;
 }
 
-.hint { color: #7a8699; font-size: 12px; line-height: 1.5; }
+.hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
 
 .import-status {
   padding: 8px 12px;
   border-radius: 8px;
-  background: #eef3fd;
-  color: #2b5cc4;
+  background: var(--info-bg);
+  color: var(--info-text);
   font-size: 13px;
 }
 
 .progress {
   height: 6px;
   border-radius: 3px;
-  background: #e6ebf4;
+  background: var(--track);
   overflow: hidden;
 }
 #importProgressBar {
@@ -833,10 +945,10 @@ input:focus, select:focus {
   white-space: nowrap;
 }
 .import-table th {
-  color: #7a8699;
+  color: var(--muted);
   font-weight: 600;
   font-size: 12px;
-  background: #f6f8fc;
+  background: var(--th-bg);
 }
 .import-table input[type="text"], .import-table input[type="number"], .import-table select {
   width: 100%;
@@ -846,18 +958,19 @@ input:focus, select:focus {
   border: 1px solid var(--line);
   border-radius: 8px;
   font-size: 13px;
-  background: #fff;
+  background: var(--panel);
+  color: var(--text);
 }
 .import-table input[type="number"] { min-width: 56px; }
-.import-table input[type="checkbox"] { width: 18px; height: 18px; accent-color: #2f6fed; }
+.import-table input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--brand); }
 .import-table .row-off { opacity: 0.45; }
 
 .import-warns {
   margin-top: 8px;
   padding: 8px 12px;
   border-radius: 8px;
-  background: #fff7e8;
-  color: #9a6b0f;
+  background: var(--warn-bg);
+  color: var(--warn);
   font-size: 12px;
   line-height: 1.7;
 }
@@ -867,7 +980,8 @@ input:focus, select:focus {
   border: 1px solid var(--line);
   border-radius: 8px;
   font-size: 13px;
-  background: #fff;
+  background: var(--panel);
+  color: var(--text);
 }
 
 /* 窄屏：确认表格横向滚动 + 底栏纵向堆叠 */
@@ -876,4 +990,126 @@ input:focus, select:focus {
   .import-hint-row .btn { width: 100%; }
   .modal-foot { flex-wrap: wrap; }
   .modal-foot .mode-select { width: 100%; }
+}
+
+/* ============================================================
+   v0.3 今日实时进度 / 主题切换 / 日历导出
+   ============================================================ */
+
+.today-clock {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--brand);
+}
+
+.today-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--info-bg);
+  color: var(--info-text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.today-live .icon { flex: none; }
+.today-live b { font-weight: 600; }
+
+.tc-progress {
+  height: 5px;
+  margin: 6px 0 3px;
+  border-radius: 3px;
+  background: var(--track);
+  overflow: hidden;
+}
+.tc-progress span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--brand);
+  transition: width .3s ease;
+}
+
+.tc-tip {
+  font-size: 12px;
+  color: var(--muted);
+}
+.tc-tip b { color: var(--text); font-weight: 600; }
+
+/* 主题切换按钮：三态图标由脚本替换 */
+#btnTheme .icon { vertical-align: -3px; }
+#btnTheme[data-theme-mode="dark"] { color: var(--warn); }
+#btnTheme[data-theme-mode="light"] { color: var(--brand); }
+
+/* 深色主题下进度/提示条与卡片对比度微调 */
+html[data-theme="dark"] .today-live { color: #b9cdff; }
+html[data-theme="dark"] .import-table input,
+html[data-theme="dark"] .mode-select { color-scheme: dark; }
+
+/* ==================== 打印课表（A4 横向，可直接贴墙） ==================== */
+
+@media print {
+  @page { size: A4 landscape; margin: 10mm; }
+
+  /* 打印时保留课程配色（否则浏览器会为了省墨去掉背景色） */
+  * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  html, body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  /* 隐藏所有交互元素：头部、今日面板、弹窗、抽屉、提示 */
+  .app-header,
+  .today-panel,
+  .stats,
+  .app-footer,
+  .toolbar-right,
+  .view-switch,
+  .tool-actions,
+  .modal-overlay,
+  .settings-overlay,
+  .toast,
+  .btn,
+  .cf-cell { display: none !important; }
+
+  /* 工具栏只留周次标签（按钮已被 .btn 隐藏），让纸张上能看出这是第几周 */
+  .toolbar {
+    background: #fff !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 0 8px !important;
+    margin: 0 !important;
+  }
+  .week-nav { justify-content: flex-start !important; gap: 10px !important; }
+  .week-label strong { font-size: 15pt !important; color: #111 !important; }
+
+  .app-main { padding: 0 !important; max-width: none !important; }
+  .panel { box-shadow: none !important; border: 0 !important; }
+
+  /* 网格完整铺开：取消滚动容器与最小宽度，避免被裁切 */
+  .cf-scroll { overflow: visible !important; }
+  .cf-inner { min-width: 0 !important; }
+  .cf-gridhead { position: static !important; }
+  .cf-gridbody { break-inside: avoid; }
+
+  .cf-card {
+    box-shadow: none !important;
+    border: 0.5pt solid #999 !important;
+    break-inside: avoid;
+  }
+  .cf-card-name { color: #111 !important; }
+  .cf-card-sub { color: #444 !important; }
+
+  /* 打印时压缩行高，让 12 节课能塞进一页 A4 横向 */
+  .cf-inner { --row-h: 40px !important; --time-w: 40px !important; }
+  .cf-dayhead { border-bottom: 1pt solid #333 !important; }
+  .cf-time { border-right: 0.5pt solid #ccc !important; }
+  .cf-daycol { border-left: 0.5pt solid #ccc !important; }
 }

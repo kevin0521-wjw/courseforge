@@ -13,10 +13,16 @@ const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  // PWA 清单必须用 manifest+json，否则浏览器会因 MIME 不符而拒绝安装
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.ics': 'text/calendar; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
-  '.ico': 'image/x-icon'
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8'
 };
 
 const server = createServer(async (req, res) => {

@@ -11,6 +11,7 @@
   var CR = window.CourseRender;
   var ST = window.CourseStorage;
   var CI = window.CourseImporter;
+  var ICS = window.CourseForgeICS;
 
   if (!CF || !CR || !ST) {
     // 依赖缺失属于致命错误，直接提示而不是白屏
@@ -30,7 +31,8 @@
     view: 'week',       // 'week' | 'list'
     editingId: null,    // 弹窗正在编辑的课程 id（null = 新增）
     draftWeeks: [],     // 弹窗当前选中的周次
-    draftColor: 'blue'  // 弹窗当前选中颜色
+    draftColor: 'blue', // 弹窗当前选中颜色
+    themeMode: 'system' // 'system' | 'light' | 'dark'
   };
 
   /** 真实日期对应的学期周次 */
@@ -60,8 +62,13 @@
 
   // ==================== 统一刷新入口 ====================
 
+  /** 只重绘「今日课程」面板（实时倒计时用，避免整页重排打断用户操作） */
+  function refreshLive() {
+    var el = document.getElementById('todayPanel');
+    if (el) el.innerHTML = CR.renderToday(state.courses, realWeek(), state.settings, new Date());
+  }
+
   function refreshAll() {
-    var now = new Date();
     var el;
 
     el = document.getElementById('weekNav');
@@ -70,13 +77,12 @@
     el = document.getElementById('statsBar');
     if (el) el.innerHTML = CR.renderStats(state.courses, state.displayWeek, state.settings);
 
-    el = document.getElementById('todayPanel');
-    if (el) el.innerHTML = CR.renderToday(state.courses, realWeek(), state.settings, now);
+    refreshLive();
 
     var main = document.getElementById('mainView');
     if (main) {
       main.innerHTML = (state.view === 'week')
-        ? CR.renderGrid(state.courses, state.displayWeek, state.settings, now)
+        ? CR.renderGrid(state.courses, state.displayWeek, state.settings, new Date())
         : CR.renderList(state.courses, state.displayWeek, state.settings);
     }
 
@@ -271,9 +277,11 @@
     var startDate = document.getElementById('settingsSemesterStart');
     var totalWeeks = document.getElementById('settingsTotalWeeks');
     var sectionsPerDay = document.getElementById('settingsSectionsPerDay');
+    var showWeekend = document.getElementById('settingsShowWeekend');
     if (startDate) startDate.value = state.settings.semesterStart || '';
     if (totalWeeks) totalWeeks.value = state.settings.totalWeeks;
     if (sectionsPerDay) sectionsPerDay.value = state.settings.sectionsPerDay;
+    if (showWeekend) showWeekend.checked = state.settings.showWeekend !== false;
     // 作息时间只读预览
     var preview = document.getElementById('sectionTimesPreview');
     if (preview) {
@@ -294,6 +302,7 @@
     var startDate = document.getElementById('settingsSemesterStart');
     var totalWeeks = document.getElementById('settingsTotalWeeks');
     var sectionsPerDay = document.getElementById('settingsSectionsPerDay');
+    var showWeekend = document.getElementById('settingsShowWeekend');
     if (!startDate.value) {
       showToast('请选择学期开始日期');
       return;
@@ -302,6 +311,7 @@
       semesterStart: startDate.value,
       totalWeeks: Number(totalWeeks.value),
       sectionsPerDay: Number(sectionsPerDay.value),
+      showWeekend: showWeekend ? showWeekend.checked : true,
       sectionTimes: state.settings.sectionTimes
     });
     // 作息预设：选了预设就用预设节次覆盖（并同步每日节次数）
@@ -337,6 +347,116 @@
     if (CI) CI.close();
     refreshAll();
     showToast('已导入 ' + list.length + ' 门课程' + (skipped ? '（' + skipped + ' 条无效已跳过）' : ''));
+  }
+
+  // ==================== 主题（跟随系统 / 浅色 / 深色） ====================
+
+  var THEME_KEY = 'wb_courseforge_theme';
+  var THEMES = ['system', 'light', 'dark'];
+  var THEME_LABEL = { system: '跟随系统', light: '浅色', dark: '深色' };
+
+  function readThemeMode() {
+    try {
+      var m = localStorage.getItem(THEME_KEY);
+      return THEMES.indexOf(m) >= 0 ? m : 'system';
+    } catch (e) {
+      return 'system';
+    }
+  }
+
+  function systemPrefersDark() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  }
+
+  /** 把三态模式解析成实际主题 */
+  function resolveTheme(mode) {
+    if (mode === 'dark') return 'dark';
+    if (mode === 'light') return 'light';
+    return systemPrefersDark() ? 'dark' : 'light';
+  }
+
+  /** 应用主题：写 html[data-theme] + 同步按钮图标与浏览器主题色 */
+  function applyTheme(mode) {
+    var resolved = resolveTheme(mode);
+    document.documentElement.setAttribute('data-theme', resolved);
+    var btn = document.getElementById('btnTheme');
+    if (btn) {
+      var iconName = mode === 'system' ? 'monitor' : (mode === 'dark' ? 'moon' : 'sun');
+      btn.innerHTML = CR.icon(iconName, 18);
+      btn.setAttribute('data-theme-mode', mode);
+      btn.title = '主题：' + THEME_LABEL[mode] + '（点击切换）';
+      btn.setAttribute('aria-label', '切换主题，当前' + THEME_LABEL[mode]);
+    }
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', resolved === 'dark' ? '#0f131a' : '#2f6fed');
+    // 桌面端原生标题栏跟随
+    if (window.CourseForgeDesktop && window.CourseForgeDesktop.setTheme) {
+      try { window.CourseForgeDesktop.setTheme(resolved); } catch (e) { /* 老版本主进程忽略 */ }
+    }
+  }
+
+  function toggleTheme() {
+    var next = THEMES[(THEMES.indexOf(state.themeMode) + 1) % THEMES.length];
+    state.themeMode = next;
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* 隐私模式忽略 */ }
+    applyTheme(next);
+    showToast('主题：' + THEME_LABEL[next]);
+  }
+
+  // ==================== 今日课程实时刷新 ====================
+
+  var liveTimer = null;
+
+  function startClock() {
+    if (liveTimer) clearInterval(liveTimer);
+    liveTimer = setInterval(function () {
+      if (document.hidden) return; // 页面不可见时不刷新，省电
+      refreshLive();
+    }, 30000);
+    // Node / jsdom 环境下定时器会阻止进程退出（测试跑不完），主动标记为「不阻塞」
+    if (liveTimer && typeof liveTimer.unref === 'function') liveTimer.unref();
+  }
+
+  // ==================== 日历导出（.ics） ====================
+
+  function exportICS() {
+    if (!ICS) { showToast('日历模块未加载，请刷新页面'); return; }
+    if (!state.courses.length) { showToast('还没有课程可导出'); return; }
+    var res;
+    try {
+      res = ICS.buildICS(state.courses, state.settings, {
+        now: new Date(),
+        calendarName: '课表工坊课程表'
+      });
+    } catch (e) {
+      showToast('生成日历失败：' + (e && e.message ? e.message : '未知错误'));
+      return;
+    }
+    if (!res.events) {
+      showToast('作息时间不完整，无法生成日程（请先在设置里选作息预设）');
+      return;
+    }
+    var blob = new Blob([res.text], { type: 'text/calendar;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = ICS.suggestFileName(new Date());
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    showToast('已导出 ' + res.events + ' 个日程，双击 .ics 即可导入手机日历'
+      + (res.truncated ? '（超出上限已截断）' : ''));
+  }
+
+  // ==================== PWA（可添加到桌面 / 离线可用） ====================
+
+  function registerSW() {
+    if (!('serviceWorker' in navigator)) return;
+    // file:// 或桌面端本地文件环境下 Service Worker 不可用，静默跳过
+    if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+    try {
+      navigator.serviceWorker.register('sw.js').catch(function () { /* 离线能力非核心，失败不影响使用 */ });
+    } catch (e) { /* 忽略 */ }
   }
 
   // ==================== Toast ====================
@@ -379,6 +499,9 @@
     'close-settings': function () { document.getElementById('settingsPanel').hidden = true; },
     'save-settings': onSettingsSave,
     'export-json': exportJSON,
+    'export-ics': exportICS,
+    'print-schedule': function () { window.print(); },
+    'toggle-theme': toggleTheme,
     'import-json': function () { document.getElementById('importFile').click(); },
     'clear-sample': onClearSample,
     'clear-all': onClearAll,
@@ -479,7 +602,9 @@
     state.courses = data.courses.map(CF.normalizeCourse);
     state.settings = CF.normalizeSettings(data.settings);
     state.displayWeek = clampWeek(realWeek());
+    state.themeMode = readThemeMode();
 
+    applyTheme(state.themeMode);
     bindEvents();
     // 导入模块挂载（照片 OCR / PDF / 粘贴文本 → 解析确认 → 入库）
     if (CI) CI.mount({
@@ -493,6 +618,9 @@
     // 桌面端环境标识
     var chip = document.getElementById('syncChip');
     if (chip && window.CourseForgeDesktop) chip.textContent = '桌面版 · 本地保存';
+    // 今日课程实时刷新（每分钟一次，页面不可见时暂停）
+    startClock();
+    registerSW();
     refreshAll();
   }
 
@@ -511,6 +639,16 @@
     if (delBtn) delBtn.addEventListener('click', function () {
       if (state.editingId) onDeleteCourse(state.editingId);
     });
+
+    // 跟随系统模式下，系统切换深浅色时自动跟随
+    if (window.matchMedia) {
+      var mq = window.matchMedia('(prefers-color-scheme: dark)');
+      var onSchemeChange = function () {
+        if (state.themeMode === 'system') applyTheme('system');
+      };
+      if (mq.addEventListener) mq.addEventListener('change', onSchemeChange);
+      else if (mq.addListener) mq.addListener(onSchemeChange);
+    }
   }
 
   if (document.readyState === 'loading') {

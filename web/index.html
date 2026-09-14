@@ -5,7 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="description" content="课表工坊 CourseForge - 大学生自制课程表平台，网页版与桌面端，数据完全本地">
   <title>课表工坊 CourseForge</title>
+  <meta name="theme-color" content="#2f6fed">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
   <link rel="stylesheet" href="css/style.css">
+  <script>
+    // 主题预设：在首屏渲染前应用，避免深色模式闪白
+    (function () {
+      try {
+        var m = localStorage.getItem('wb_courseforge_theme') || 'system';
+        var dark = m === 'dark' || (m === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      } catch (e) { /* 隐私模式下 localStorage 可能不可用，忽略 */ }
+    })();
+  </script>
 </head>
 <body>
 
@@ -22,6 +36,7 @@
     </div>
     <div class="header-actions">
       <span id="syncChip" class="chip">浏览器 · 本地保存</span>
+      <button class="btn btn-icon" id="btnTheme" data-action="toggle-theme" title="切换主题（跟随系统 / 浅色 / 深色）" aria-label="切换主题"></button>
       <button class="btn btn-primary" data-action="add-course" title="添加课程">
         <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         添加课程
@@ -47,6 +62,8 @@
         </div>
         <div class="tool-actions">
           <button class="btn btn-ghost" data-action="open-import" title="从照片 / PDF / 文本导入课表">导入课表</button>
+          <button class="btn btn-ghost" data-action="print-schedule" title="打印课表（A4 横向，可直接贴墙）">打印</button>
+          <button class="btn btn-ghost" data-action="export-ics" title="导出 .ics 日历，可导入手机系统日历">导出日历</button>
           <button class="btn btn-ghost" data-action="export-json" title="导出 JSON 备份">导出备份</button>
           <button class="btn btn-ghost" data-action="import-json" title="从 JSON 备份恢复">导入恢复</button>
           <button class="btn btn-ghost" data-action="clear-sample" id="btnClearSample" hidden>清空示例</button>
@@ -88,6 +105,11 @@
         <label class="field">
           <span class="field-label">每日节次数（1-14）</span>
           <input type="number" id="settingsSectionsPerDay" name="settingsSectionsPerDay" min="1" max="14" step="1" required>
+        </label>
+
+        <label class="field field-check">
+          <input type="checkbox" id="settingsShowWeekend" name="settingsShowWeekend">
+          <span class="field-label">显示周六、周日（关闭后课表只排周一到周五）</span>
         </label>
 
         <label class="field">
@@ -253,6 +275,7 @@
   <script src="js/storage.js"></script>
   <script src="js/render.js"></script>
   <script src="js/parser.js"></script>
+  <script src="js/ics.js"></script>
   <script src="js/importer.js"></script>
   <script src="js/app.js"></script>
 </body>

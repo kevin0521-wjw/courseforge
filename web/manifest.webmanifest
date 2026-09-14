@@ -1,0 +1,26 @@
+{
+  "name": "课表工坊 CourseForge",
+  "short_name": "课表工坊",
+  "description": "大学生自己的课程表：周视图网格、照片/PDF/文本智能导入、日历导出、数据完全本地存储",
+  "lang": "zh-CN",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f7fb",
+  "theme_color": "#2f6fed",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

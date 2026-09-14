@@ -8,12 +8,25 @@ const assert = require('node:assert/strict');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 
+/**
+ * jsdom 加载策略（可选依赖，缺失时跳过 DOM 流程测试）：
+ *  1. 常规 require（项目本地 node_modules）
+ *  2. 通过 NODE_PATH 显式定位——node --test 的子进程不会自动应用 NODE_PATH，
+ *     这一步能救回「托管依赖目录」下的 jsdom
+ */
 let jsdom = null;
-try {
-  jsdom = require('jsdom');
-} catch (e) {
-  jsdom = null;
+function loadJsdom() {
+  const candidates = [];
+  candidates.push(() => require('jsdom'));
+  for (const dir of String(process.env.NODE_PATH || '').split(path.delimiter)) {
+    if (dir) candidates.push(() => require(path.join(dir, 'jsdom')));
+  }
+  for (const fn of candidates) {
+    try { return fn(); } catch (e) { /* 试下一个 */ }
+  }
+  return null;
 }
+jsdom = loadJsdom();
 
 const ROOT = path.join(__dirname, '..');
 const WEB = path.join(ROOT, 'web');
@@ -26,16 +39,25 @@ function bootDom() {
       pretendToBeVisual: true
     });
     const w = dom.window;
+    // jsdom 未实现 Blob URL，导出功能用桩替代
+    if (!w.URL.createObjectURL) w.URL.createObjectURL = () => 'blob:stub';
+    if (!w.URL.revokeObjectURL) w.URL.revokeObjectURL = () => {};
     return Promise.all([
       readFile(path.join(WEB, 'js', 'core.js'), 'utf-8'),
       readFile(path.join(WEB, 'js', 'storage.js'), 'utf-8'),
       readFile(path.join(WEB, 'js', 'render.js'), 'utf-8'),
+      readFile(path.join(WEB, 'js', 'parser.js'), 'utf-8'),
+      readFile(path.join(WEB, 'js', 'ics.js'), 'utf-8'),
+      readFile(path.join(WEB, 'js', 'importer.js'), 'utf-8'),
       readFile(path.join(WEB, 'js', 'app.js'), 'utf-8')
-    ]).then(([core, storage, render, app]) => {
+    ]).then(([core, storage, render, parser, ics, importer, app]) => {
       // 按依赖顺序执行（app.js 会因 readyState 非 loading 直接 init）
       w.eval(core);
       w.eval(storage);
       w.eval(render);
+      w.eval(parser);
+      w.eval(ics);
+      w.eval(importer);
       w.eval(app);
       return w;
     });
@@ -159,5 +181,60 @@ D('数据持久化：刷新（重新 init）后数据仍在', () => {
       assert.equal(countAfter, countBefore);
       assert.ok(doc.getElementById('mainView').innerHTML.includes('周六自习'));
     });
+  });
+});
+
+D('主题切换：三态循环 + 持久化 + 图标渲染', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    const btn = doc.getElementById('btnTheme');
+    assert.ok(btn, '应有主题切换按钮');
+    // 初始化后 html 上应已应用主题
+    const initial = doc.documentElement.getAttribute('data-theme');
+    assert.ok(initial === 'light' || initial === 'dark', '初始主题应为 light/dark，实际: ' + initial);
+    assert.ok(btn.innerHTML.includes('<svg'), '按钮应渲染内联 SVG 图标（不用 emoji）');
+
+    const modes = [];
+    for (let i = 0; i < 3; i++) {
+      btn.click();
+      modes.push(btn.getAttribute('data-theme-mode'));
+    }
+    assert.deepEqual(modes, ['light', 'dark', 'system'], '按钮应循环 跟随系统→浅色→深色');
+
+    // 切到深色（system → light → dark）
+    btn.click();
+    btn.click();
+    assert.equal(doc.documentElement.getAttribute('data-theme'), 'dark');
+    assert.equal(w.localStorage.getItem('wb_courseforge_theme'), 'dark', '主题选择应持久化');
+    const meta = doc.querySelector('meta[name="theme-color"]');
+    assert.equal(meta.getAttribute('content'), '#0f131a', '深色下浏览器主题色应同步');
+  });
+});
+
+D('导出日历：ICS 生成 + 一键下载链路', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    assert.ok(w.CourseForgeICS, 'ICS 模块应随页面加载');
+    const saved = JSON.parse(w.localStorage.getItem('wb_courseforge_v1'));
+    const res = w.CourseForgeICS.buildICS(saved.courses, saved.settings, {});
+    assert.ok(res.events > 0, '示例课程应生成日程');
+    assert.ok(res.text.includes('BEGIN:VCALENDAR'));
+    assert.ok(res.text.includes('DTSTART:'), '应包含具体上课时间');
+
+    // 走完整按钮链路
+    doc.querySelector('[data-action="export-ics"]').click();
+    const toast = doc.getElementById('toast').textContent;
+    assert.ok(/已导出 \d+ 个日程/.test(toast), 'toast 应提示导出结果，实际: ' + toast);
+  });
+});
+
+D('今日课程：实时时间与提示区块渲染', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    const html = doc.getElementById('todayPanel').innerHTML;
+    assert.ok(html.includes('today-head'), '应有今日标题区');
+    assert.ok(html.includes('today-clock'), '应显示当前时间');
+    assert.ok(html.includes('today-live') || html.includes('today-empty'), '应有实时提示区');
+    assert.ok(/今天 · \d+月\d+日/.test(html), '应显示今天日期');
   });
 });
