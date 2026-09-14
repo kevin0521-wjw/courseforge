@@ -758,3 +758,122 @@ input:focus, select:focus {
     padding-bottom: calc(18px + env(safe-area-inset-bottom));
   }
 }
+
+/* ==================== 课表导入弹窗 ==================== */
+
+.modal-wide { max-width: 780px; }
+
+.import-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.import-body { display: flex; flex-direction: column; gap: 10px; }
+
+#importText {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 150px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: vertical;
+  background: #fafbfd;
+}
+#importText:focus { outline: 2px solid rgba(47, 111, 237, 0.35); border-color: #2f6fed; }
+
+.import-hint-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hint { color: #7a8699; font-size: 12px; line-height: 1.5; }
+
+.import-status {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #eef3fd;
+  color: #2b5cc4;
+  font-size: 13px;
+}
+
+.progress {
+  height: 6px;
+  border-radius: 3px;
+  background: #e6ebf4;
+  overflow: hidden;
+}
+#importProgressBar {
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #2f6fed, #0d9488);
+  transition: width 0.2s ease;
+}
+
+.result-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+.import-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 640px;
+}
+.import-table th, .import-table td {
+  padding: 6px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+.import-table th {
+  color: #7a8699;
+  font-weight: 600;
+  font-size: 12px;
+  background: #f6f8fc;
+}
+.import-table input[type="text"], .import-table input[type="number"], .import-table select {
+  width: 100%;
+  min-width: 70px;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  background: #fff;
+}
+.import-table input[type="number"] { min-width: 56px; }
+.import-table input[type="checkbox"] { width: 18px; height: 18px; accent-color: #2f6fed; }
+.import-table .row-off { opacity: 0.45; }
+
+.import-warns {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fff7e8;
+  color: #9a6b0f;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.mode-select {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  background: #fff;
+}
+
+/* 窄屏：确认表格横向滚动 + 底栏纵向堆叠 */
+@media (max-width: 640px) {
+  .import-hint-row { flex-direction: column; align-items: stretch; }
+  .import-hint-row .btn { width: 100%; }
+  .modal-foot { flex-wrap: wrap; }
+  .modal-foot .mode-select { width: 100%; }
+}

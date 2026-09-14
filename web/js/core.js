@@ -29,6 +29,37 @@
     { label: '12', start: '20:45', end: '21:30' }
   ];
 
+  /** 作息时间预设：上海大学官方 12 节制（来源：jwb.shu.edu.cn，2021-09-01 起实施） */
+  var SECTION_TIME_PRESETS = {
+    shu: [
+      { label: '1',  start: '08:00', end: '08:45' },
+      { label: '2',  start: '08:55', end: '09:40' },
+      { label: '3',  start: '10:00', end: '10:45' },
+      { label: '4',  start: '10:55', end: '11:40' },
+      { label: '5',  start: '13:00', end: '13:45' },
+      { label: '6',  start: '13:55', end: '14:40' },
+      { label: '7',  start: '15:00', end: '15:45' },
+      { label: '8',  start: '15:55', end: '16:40' },
+      { label: '9',  start: '18:00', end: '18:45' },
+      { label: '10', start: '18:55', end: '19:40' },
+      { label: '11', start: '20:00', end: '20:45' },
+      { label: '12', start: '20:55', end: '21:40' }
+    ],
+    generic: null // 运行时指向 DEFAULT_SECTION_TIMES 的深拷贝
+  };
+
+  /** 获取作息预设的深拷贝（避免调用方直接改到常量） */
+  function getPresetTimes(key) {
+    if (key === 'generic' || !SECTION_TIME_PRESETS[key]) {
+      return DEFAULT_SECTION_TIMES.map(function (t) {
+        return { label: t.label, start: t.start, end: t.end };
+      });
+    }
+    return SECTION_TIME_PRESETS[key].map(function (t) {
+      return { label: t.label, start: t.start, end: t.end };
+    });
+  }
+
   /** 课程预设色（main 用于描边/强调，bg 用于卡片底色） */
   var COURSE_COLORS = [
     { key: 'blue',   name: '湖蓝', main: '#2f6fed', bg: '#e8effd' },
@@ -382,6 +413,8 @@
 
   return {
     DEFAULT_SECTION_TIMES: DEFAULT_SECTION_TIMES,
+    SECTION_TIME_PRESETS: SECTION_TIME_PRESETS,
+    getPresetTimes: getPresetTimes,
     COURSE_COLORS: COURSE_COLORS,
     DAY_NAMES: DAY_NAMES,
     uid: uid,

@@ -1,0 +1,445 @@
+/**
+ * CourseForge 课表导入模块
+ * 三个来源：粘贴文本 / 照片 OCR（Tesseract.js 懒加载）/ PDF（pdf.js 懒加载）
+ * 解析统一走 CourseParser.parseScheduleText，结果在确认表格中可勾选、可修改后入库
+ * 依赖：core.js（CF）、parser.js（CP）；通过 mount(bridge) 与 app.js 解耦
+ */
+(function () {
+  'use strict';
+
+  var CF = window.CourseForge;
+  var CP = window.CourseParser;
+
+  // CDN 源（主源失败自动换备源；首次使用需联网，之后浏览器有缓存）
+  var TESSERACT_URLS = [
+    'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+    'https://unpkg.com/tesseract.js@5.1.1/dist/tesseract.min.js'
+  ];
+  var PDFJS_URLS = [
+    'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',
+    'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js'
+  ];
+  var PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+
+  var bridge = null;          // { getSettings, apply, toast }
+  var parsedItems = [];       // 解析结果（可编辑）
+  var ocrWorker = null;       // Tesseract worker 缓存
+
+  // ==================== 工具 ====================
+
+  function $(id) { return document.getElementById(id); }
+
+  function loadScript(urls) {
+    return new Promise(function (resolve, reject) {
+      var i = 0;
+      function tryNext() {
+        if (i >= urls.length) { reject(new Error('脚本加载失败（检查网络）')); return; }
+        var el = document.createElement('script');
+        el.src = urls[i++];
+        el.onload = function () { resolve(); };
+        el.onerror = function () { el.remove(); tryNext(); };
+        document.head.appendChild(el);
+      }
+      tryNext();
+    });
+  }
+
+  function setStatus(msg) {
+    var el = $('importStatus');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.hidden = !msg;
+  }
+
+  function setProgress(pct) {
+    var wrap = $('importProgressWrap');
+    var bar = $('importProgressBar');
+    if (!wrap || !bar) return;
+    wrap.hidden = pct == null;
+    bar.style.width = Math.round(pct * 100) + '%';
+  }
+
+  /** 图片文件 → 压缩到 maxW 宽的 canvas（加快 OCR） */
+  function fileToCanvas(file, maxW) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      var url = URL.createObjectURL(file);
+      img.onload = function () {
+        var scale = Math.min(1, maxW / (img.naturalWidth || maxW));
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.naturalWidth * scale);
+        canvas.height = Math.round(img.naturalHeight * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve(canvas);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error('图片读取失败')); };
+      img.src = url;
+    });
+  }
+
+  /** 确保 Tesseract.js 已加载，并创建中文识别 worker（带进度回调） */
+  function ensureOcr() {
+    if (ocrWorker) return Promise.resolve(ocrWorker);
+    return loadScript(TESSERACT_URLS).then(function () {
+      if (typeof Tesseract === 'undefined') throw new Error('OCR 引擎加载失败');
+      return Tesseract.createWorker('chi_sim', 1, {
+        logger: function (m) {
+          if (m && typeof m.progress === 'number') setProgress(m.progress);
+        }
+      });
+    }).then(function (w) { ocrWorker = w; return w; });
+  }
+
+  /** 确保 pdf.js 已加载 */
+  function ensurePdfJs() {
+    if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+    return loadScript(PDFJS_URLS).then(function () {
+      if (!window.pdfjsLib) throw new Error('PDF 引擎加载失败');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+      return window.pdfjsLib;
+    });
+  }
+
+  // ==================== 解析入口 ====================
+
+  /** 文本 → parsedItems（补默认周次） */
+  function feedText(text) {
+    var settings = bridge ? bridge.getSettings() : {};
+    var total = (settings && settings.totalWeeks) || 16;
+    var r = CP.parseScheduleText(text, {
+      sectionTimes: settings && settings.sectionTimes,
+      totalWeeks: total
+    });
+    parsedItems = r.items.map(function (it) {
+      return {
+        selected: true,
+        name: it.name || '',
+        teacher: it.teacher || '',
+        location: it.location || '',
+        day: it.day || 1,
+        startSection: it.startSection,
+        endSection: it.endSection,
+        weeks: it.weeks || defaultWeeks(total),
+        raw: it.raw || ''
+      };
+    });
+    renderResults(r.warnings);
+  }
+
+  function defaultWeeks(total) {
+    var out = [];
+    for (var w = 1; w <= Math.min(16, total); w++) out.push(w);
+    return out;
+  }
+
+  /** OCR 一张图片并解析 */
+  function runOcr(file) {
+    setStatus('正在加载识别引擎（首次约 15MB，请稍候）…');
+    setProgress(0);
+    ensureOcr().then(function (worker) {
+      setStatus('正在识别图片中的课程表…');
+      return fileToCanvas(file, 1600).then(function (canvas) {
+        return worker.recognize(canvas);
+      });
+    }).then(function (res) {
+      setProgress(null);
+      var text = (res && res.data && res.data.text) || '';
+      if (!text.trim()) {
+        setStatus('未识别出文字，请确认照片清晰且包含课程信息');
+        return;
+      }
+      setStatus('识别完成，正在解析…');
+      feedText(text);
+      setStatus('');
+    }).catch(function (err) {
+      setProgress(null);
+      setStatus('识别失败：' + (err && err.message ? err.message : '未知错误'));
+    });
+  }
+
+  /** 解析 PDF：优先提取文字层，文字太少（扫描版）的页转图片走 OCR */
+  function runPdf(file) {
+    setStatus('正在加载 PDF 引擎…');
+    setProgress(0.05);
+    ensurePdfJs().then(function () {
+      return file.arrayBuffer();
+    }).then(function (buf) {
+      setStatus('正在解析 PDF…');
+      return window.pdfjsLib.getDocument({ data: buf }).promise;
+    }).then(function (doc) {
+      var texts = [];
+      var pages = [];
+      for (var p = 1; p <= doc.numPages; p++) pages.push(p);
+      return pages.reduce(function (chain, p) {
+        return chain.then(function () {
+          return doc.getPage(p).then(function (page) {
+            return page.getTextContent().then(function (tc) {
+              var line = tc.items.map(function (it) { return it.str; }).join(' ');
+              if (line.replace(/\s/g, '').length >= 15) {
+                texts.push(line);
+                setProgress(p / doc.numPages);
+                return null;
+              }
+              // 文字层太薄 → 渲染成图片走 OCR
+              setStatus('第 ' + p + ' 页是扫描图，正在 OCR…');
+              var scale = 2;
+              var viewport = page.getViewport({ scale: scale });
+              var canvas = document.createElement('canvas');
+              canvas.width = viewport.width;
+              canvas.height = viewport.height;
+              return page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise
+                .then(function () { return ensureOcr(); })
+                .then(function (worker) { return worker.recognize(canvas); })
+                .then(function (res) {
+                  texts.push(res.data.text || '');
+                  setProgress(p / doc.numPages);
+                });
+            });
+          });
+        });
+      }, Promise.resolve()).then(function () { return texts.join('\n'); });
+    }).then(function (text) {
+      setProgress(null);
+      if (!text.trim()) {
+        setStatus('PDF 中未提取到文字');
+        return;
+      }
+      feedText(text);
+      setStatus('');
+    }).catch(function (err) {
+      setProgress(null);
+      setStatus('PDF 解析失败：' + (err && err.message ? err.message : '未知错误'));
+    });
+  }
+
+  // ==================== 结果确认表格 ====================
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function renderResults(warnings) {
+    var box = $('importResult');
+    var summary = $('importSummary');
+    var applyBtn = $('btnImportApply');
+    if (!box) return;
+
+    if (!parsedItems.length) {
+      box.innerHTML = '<p class="hint">没有解析出课程。可尝试：粘贴更完整的课表文本、换更清晰的照片，或在下方手动修改后导入。</p>';
+      if (applyBtn) applyBtn.disabled = true;
+      if (summary) summary.textContent = '';
+    } else {
+      var dayOptions = '';
+      var names = (CF && CF.DAY_NAMES) || ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+      for (var d = 0; d < names.length; d++) {
+        dayOptions += '<option value="' + (d + 1) + '">' + names[d] + '</option>';
+      }
+      var rows = '';
+      for (var i = 0; i < parsedItems.length; i++) {
+        var it = parsedItems[i];
+        rows += '<tr data-idx="' + i + '"' + (it.selected ? '' : ' class="row-off"') + '>'
+          + '<td><input type="checkbox" data-field="selected"' + (it.selected ? ' checked' : '') + ' aria-label="选择"></td>'
+          + '<td><input type="text" data-field="name" value="' + esc(it.name) + '" maxlength="30"></td>'
+          + '<td><select data-field="day">' + dayOptions.replace('value="' + it.day + '"', 'value="' + it.day + '" selected') + '</select></td>'
+          + '<td><input type="number" data-field="startSection" value="' + (it.startSection == null ? '' : it.startSection) + '" min="1" max="14"></td>'
+          + '<td><input type="number" data-field="endSection" value="' + (it.endSection == null ? '' : it.endSection) + '" min="1" max="14"></td>'
+          + '<td><input type="text" data-field="weeksSpec" value="' + esc(weeksToSpec(it.weeks)) + '" placeholder="如 1-16"></td>'
+          + '<td><input type="text" data-field="location" value="' + esc(it.location) + '" maxlength="30"></td>'
+          + '<td><input type="text" data-field="teacher" value="' + esc(it.teacher) + '" maxlength="20"></td>'
+          + '</tr>';
+      }
+      box.innerHTML =
+        '<div class="result-scroll"><table class="import-table"><thead><tr>'
+        + '<th>导入</th><th>课程名</th><th>星期</th><th>开始节</th><th>结束节</th><th>周次</th><th>地点</th><th>教师</th>'
+        + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+        + (warnings && warnings.length
+          ? '<div class="import-warns">' + warnings.map(function (w) { return '⚠ ' + esc(w); }).join('<br>') + '</div>'
+          : '');
+      if (applyBtn) applyBtn.disabled = false;
+      if (summary) summary.textContent = '共解析出 ' + parsedItems.length + ' 条课程';
+    }
+  }
+
+  /** 周次数组 → 紧凑文本（1-16 / 1-15(单)），便于表格里编辑 */
+  function weeksToSpec(weeks) {
+    if (!weeks || !weeks.length) return '';
+    var allOdd = weeks.length > 1 && weeks.every(function (w) { return w % 2 === 1; });
+    var allEven = weeks.length > 1 && weeks.every(function (w) { return w % 2 === 0; });
+    var parts = [];
+    var s = weeks[0], p = weeks[0];
+    for (var i = 1; i <= weeks.length; i++) {
+      var w = weeks[i];
+      if (w !== p + 1) {
+        parts.push(s === p ? String(s) : s + '-' + p);
+        s = w;
+      }
+      p = w;
+    }
+    var spec = parts.join(',');
+    if (allOdd) spec += '(单)';
+    if (allEven) spec += '(双)';
+    return spec;
+  }
+
+  /** 表格编辑 → 更新 parsedItems */
+  function onResultEdit(e) {
+    var tr = e.target.closest ? e.target.closest('tr[data-idx]') : null;
+    if (!tr) return;
+    var idx = Number(tr.getAttribute('data-idx'));
+    var it = parsedItems[idx];
+    if (!it) return;
+    var field = e.target.getAttribute('data-field');
+    if (!field) return;
+    if (field === 'selected') { it.selected = e.target.checked; tr.classList.toggle('row-off', !it.selected); return; }
+    var v = e.target.value;
+    if (field === 'day') it.day = Number(v) || 1;
+    else if (field === 'startSection') it.startSection = v === '' ? null : Number(v);
+    else if (field === 'endSection') it.endSection = v === '' ? null : Number(v);
+    else if (field === 'weeksSpec') it.weeksSpec = v;
+    else it[field] = v;
+  }
+
+  // ==================== 导入应用 ====================
+
+  function applySelected() {
+    if (!bridge) return;
+    var settings = bridge.getSettings();
+    var colorNames = (CF && CF.COURSE_COLORS) || [];
+    var colorIdx = {};
+    var counter = 0;
+
+    var selected = parsedItems.filter(function (it) { return it.selected; });
+    var valid = [];
+    var skipped = 0;
+    for (var i = 0; i < selected.length; i++) {
+      var it = selected[i];
+      // 周次以表格编辑后的文本为准
+      var weeks = CP.parseWeeksSpec(it.weeksSpec != null ? it.weeksSpec : weeksToSpec(it.weeks));
+      var c = CF.normalizeCourse({
+        name: it.name,
+        teacher: it.teacher,
+        location: it.location,
+        day: it.day,
+        startSection: it.startSection || 1,
+        endSection: it.endSection || it.startSection || 1,
+        weeks: weeks || defaultWeeks(settings.totalWeeks)
+      });
+      var errs = CF.validateCourse(c, settings, []);
+      if (errs.length) { skipped++; continue; }
+      // 同名课程同色（按名称哈希分配，冲突少且稳定）
+      if (!colorIdx[c.name]) {
+        colorIdx[c.name] = colorNames[counter++ % colorNames.length].key;
+      }
+      c.color = colorIdx[c.name];
+      valid.push(c);
+    }
+
+    var modeEl = $('importMode');
+    var mode = modeEl ? modeEl.value : 'append';
+    bridge.apply(valid, mode, skipped);
+  }
+
+  // ==================== 弹窗控制 ====================
+
+  function openModal() {
+    parsedItems = [];
+    renderResults([]);
+    setStatus('');
+    setProgress(null);
+    var ta = $('importText');
+    if (ta) ta.value = '';
+    switchTab('text');
+    var modal = $('importModal');
+    if (modal) modal.hidden = false;
+  }
+
+  function closeModal() {
+    var modal = $('importModal');
+    if (modal) modal.hidden = true;
+  }
+
+  function switchTab(name) {
+    var tabs = document.querySelectorAll('#importModal [data-imp-tab]');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle('active', tabs[i].getAttribute('data-imp-tab') === name);
+    }
+    var panes = document.querySelectorAll('#importModal [data-imp-pane]');
+    for (var j = 0; j < panes.length; j++) {
+      panes[j].hidden = panes[j].getAttribute('data-imp-pane') !== name;
+    }
+  }
+
+  // ==================== 事件绑定 ====================
+
+  function bind() {
+    document.addEventListener('click', function (e) {
+      var t = e.target;
+      if (!t || !t.closest) return;
+
+      var tab = t.closest('[data-imp-tab]');
+      if (tab) { switchTab(tab.getAttribute('data-imp-tab')); return; }
+
+      var actionEl = t.closest('[data-action]');
+      if (!actionEl) return;
+      var action = actionEl.getAttribute('data-action');
+
+      if (action === 'open-import') { openModal(); return; }
+      if (action === 'close-import') { closeModal(); return; }
+      if (action === 'import-parse-text') {
+        var ta = $('importText');
+        var text = ta ? ta.value : '';
+        if (!text.trim()) { if (bridge) bridge.toast('请先粘贴课表文本'); return; }
+        feedText(text);
+        return;
+      }
+      if (action === 'import-pick-image') { var fi = $('importImage'); if (fi) fi.click(); return; }
+      if (action === 'import-pick-pdf') { var fp = $('importPdf'); if (fp) fp.click(); return; }
+      if (action === 'import-apply') { applySelected(); return; }
+    });
+
+    // 遮罩点击关闭
+    document.addEventListener('click', function (e) {
+      if (e.target && e.target.id === 'importModal') closeModal();
+    });
+
+    // 文件选择
+    var fi = $('importImage');
+    if (fi) fi.addEventListener('change', function () {
+      var f = fi.files && fi.files[0];
+      fi.value = '';
+      if (f) runOcr(f);
+    });
+    var fp = $('importPdf');
+    if (fp) fp.addEventListener('change', function () {
+      var f = fp.files && fp.files[0];
+      fp.value = '';
+      if (f) runPdf(f);
+    });
+
+    // 结果表格编辑
+    var box = $('importResult');
+    if (box) {
+      box.addEventListener('input', onResultEdit);
+      box.addEventListener('change', onResultEdit);
+    }
+  }
+
+  function mount(b) {
+    bridge = b;
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', bind);
+    } else {
+      bind();
+    }
+  }
+
+  // ==================== 导出 ====================
+
+  window.CourseImporter = {
+    mount: mount,
+    open: openModal,
+    close: closeModal
+  };
+})();

@@ -1,0 +1,325 @@
+/**
+ * CourseForge 课表文本解析引擎（纯函数，无 DOM 依赖）
+ * 从「教务系统复制文本 / OCR 识别文本 / PDF 提取文本」中解析出课程条目
+ * 支持：星期（周一/星期一/礼拜一）、节次（第3-4节 / 3,4节 / 5-6节）、
+ *       周次（1-16周 / 单周 / 双周 / 1-8,10-16周）、时间（18:00-19:40 → 节次映射）、
+ *       地点（X楼201 / BJ102 / 体育馆 等）与教师（显式标注或末尾短词启发式）
+ * UMD 导出：浏览器挂 window.CourseParser，Node 直接 require 测试
+ */
+(function (root, factory) {
+  if (typeof module === 'object' && typeof module.exports === 'object') {
+    module.exports = factory();
+  } else {
+    root.CourseParser = factory();
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  /** 中文星期 → 数字（1=周一 … 7=周日） */
+  var DAY_MAP = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 7, '天': 7 };
+
+  /** 课表表头/无关行关键词（命中即整行跳过） */
+  var HEADER_WORDS = /(课程表|时间表|学期|学年|节次|星期几|上午|下午|晚上|作息|总课表|个人课表)/;
+
+  // ==================== 基础工具 ====================
+
+  /** 全角数字/标点 → 半角，统一各种破折号，方便正则处理 */
+  function normalizeLine(s) {
+    return String(s == null ? '' : s)
+      .replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+      .replace(/[Ａ-Ｚａ-ｚ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); })
+      .replace(/[（]/g, '(').replace(/[）]/g, ')')
+      .replace(/[：]/g, ':').replace(/[，]/g, ',')
+      .replace(/[－—–~～]/g, '-')
+      .replace(/[ \t]+/g, ' ')
+      .trim();
+  }
+
+  /** 展开数字区间；b 为空时返回单元素数组；a>b 自动交换 */
+  function expandRange(a, b) {
+    a = Number(a);
+    if (b == null || b === '') return [a];
+    b = Number(b);
+    if (b < a) { var t = a; a = b; b = t; }
+    var out = [];
+    for (var i = a; i <= b; i++) out.push(i);
+    return out;
+  }
+
+  /**
+   * 解析周次描述文本 → 周次数组（升序去重）
+   * 支持：'1-16'、'1,3,5-8'、'1-16(单)'、'2-16(双)'、'第1-16周'
+   * 无有效内容返回 null（由调用方决定默认值）
+   */
+  function parseWeeksSpec(str) {
+    var s = String(str == null ? '' : str);
+    var parity = null;
+    if (/单/.test(s)) parity = 'odd';
+    else if (/双/.test(s)) parity = 'even';
+    var weeks = [];
+    var re = /(\d{1,2})\s*(?:[-]\s*(\d{1,2}))?/g;
+    var m;
+    while ((m = re.exec(s)) !== null) {
+      var arr = expandRange(m[1], m[2]);
+      for (var i = 0; i < arr.length; i++) {
+        var w = arr[i];
+        if (w >= 1 && w <= 60 && weeks.indexOf(w) === -1) weeks.push(w);
+      }
+    }
+    if (!weeks.length) return null;
+    weeks.sort(function (a, b) { return a - b; });
+    if (parity === 'odd') weeks = weeks.filter(function (w) { return w % 2 === 1; });
+    if (parity === 'even') weeks = weeks.filter(function (w) { return w % 2 === 0; });
+    return weeks;
+  }
+
+  // ==================== 行内特征提取 ====================
+
+  /** 提取行内所有星期（可多个，如「周一,周三」），返回数字数组；无则 [] */
+  function extractDays(s) {
+    var out = [];
+    var re = /(?:星期|周|礼拜)\s*([一二三四五六日天])/g;
+    var m;
+    while ((m = re.exec(s)) !== null) {
+      var d = DAY_MAP[m[1]];
+      if (d && out.indexOf(d) === -1) out.push(d);
+    }
+    return out;
+  }
+
+  /** 提取行内周次区间（'1-16周'、'第3周'），返回 {weeks, matched:[原文]}；无则 {weeks:null, matched:[]} */
+  function extractWeeks(s) {
+    var matched = [];
+    var nums = [];
+    var re = /(\d{1,2})\s*(?:-\s*(\d{1,2}))?\s*周/g;
+    var m;
+    while ((m = re.exec(s)) !== null) {
+      matched.push(m[0]);
+      var arr = expandRange(m[1], m[2]);
+      for (var i = 0; i < arr.length; i++) {
+        if (nums.indexOf(arr[i]) === -1) nums.push(arr[i]);
+      }
+    }
+    if (!nums.length) return { weeks: null, matched: matched };
+    nums.sort(function (a, b) { return a - b; });
+    // 行内带「单/双」标记时做奇偶过滤（兼容 1-16周(单) / 单周 两种写法）
+    if (/(单周|\(单\))/.test(s)) nums = nums.filter(function (w) { return w % 2 === 1; });
+    else if (/(双周|\(双\))/.test(s)) nums = nums.filter(function (w) { return w % 2 === 0; });
+    return { weeks: nums, matched: matched };
+  }
+
+  /** 提取节次，返回 {start, end, matched}；识别失败返回 null */
+  function extractSections(s) {
+    var m;
+    // 第3-4节 / 第3,4节 / 第3节（含可选区间）
+    m = /第\s*(\d{1,2})\s*(?:[-,]\s*(\d{1,2}))?\s*节/.exec(s);
+    if (m) return { start: Number(m[1]), end: Number(m[2] || m[1]), matched: m[0] };
+    // 3,4节 / 3、4节
+    m = /(\d{1,2})\s*[,、]\s*(\d{1,2})\s*节/.exec(s);
+    if (m) return { start: Number(m[1]), end: Number(m[2]), matched: m[0] };
+    // 3-4节
+    m = /(\d{1,2})\s*-\s*(\d{1,2})\s*节/.exec(s);
+    if (m) return { start: Number(m[1]), end: Number(m[2]), matched: m[0] };
+    return null;
+  }
+
+  /** 兜底：无「节」字时，识别「周一 3-4」这类紧凑写法（排除周次/时间/纯数字回溯） */
+  function extractBareSections(s) {
+    var m = /(?:^|[^\d:])(\d{1,2})\s*-\s*(\d{1,2})(?![\d\s]*[周:：])/.exec(s);
+    if (m && Number(m[1]) >= 1 && Number(m[1]) <= 14 && Number(m[2]) >= Number(m[1]) && Number(m[2]) <= 14) {
+      return { start: Number(m[1]), end: Number(m[2]), matched: m[0].replace(/^[^\d]/, '') };
+    }
+    return null;
+  }
+
+  /** 'HH:MM-HH:MM' 起止时间 → 按作息表映射节次；无法映射返回 null */
+  function extractSectionsByTime(s, sectionTimes) {
+    var m = /(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/.exec(s);
+    if (!m || !sectionTimes || !sectionTimes.length) return null;
+    var startMin = Number(m[1]) * 60 + Number(m[2]);
+    var endMin = Number(m[3]) * 60 + Number(m[4]);
+    var start = 0, end = 0;
+    for (var i = 0; i < sectionTimes.length; i++) {
+      var t = sectionTimes[i] || {};
+      if (toMin(t.start) === startMin) start = i + 1;
+      if (toMin(t.end) === endMin) end = i + 1;
+    }
+    if (!start || !end) return null;
+    return { start: start, end: Math.max(start, end), matched: m[0] };
+  }
+
+  function toMin(t) {
+    var m = /^(\d{1,2}):(\d{2})$/.exec(String(t == null ? '' : t));
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  }
+
+  // ==================== 名称/地点/教师启发式 ====================
+
+  /** 判断 token 是否像地点：教学楼/机房/体育馆/B\\d{3} 等 */
+  function looksLikeLocation(t) {
+    if (!t) return false;
+    if (/(楼|馆|室|厅|房|栋|校区|操场|场)/.test(t)) return true;
+    if (/^[A-Za-z]{1,4}\d{2,4}$/.test(t)) return true; // BJ102 / D202
+    if (/^\d{3,4}$/.test(t)) return true;               // 纯教室号 301
+    return false;
+  }
+
+  /** 判断 token 是否像教师名：2-4 个汉字（可带 老师/教授/讲师 后缀），且不含地点词 */
+  function looksLikeTeacher(t) {
+    if (!t) return false;
+    if (looksLikeLocation(t)) return false;
+    if (/^[\u4e00-\u9fa5]{2,4}$/.test(t)) return true;
+    if (/^[\u4e00-\u9fa5]{2,4}(老师|教授|讲师|副教授)$/.test(t)) return true;
+    return false;
+  }
+
+  /** 从行剩余文本中拆出 {name, teacher, location}
+   *  课表行的典型顺序：课程名(前) … 地点(中) … 教师(后)
+   *  因此：课程名 = 第一个非地点 token；教师 = 最后一个非地点 token（需像人名且≠课程名） */
+  function splitRest(rest) {
+    var tokens = rest.split(/[\s,;、/|·]+/).filter(function (t) {
+      return t && !/^[()\[\]（）\-:：.]+$/.test(t); // 去掉纯符号残片
+    });
+    var nonLoc = tokens.filter(function (t) { return !looksLikeLocation(t); });
+    var name = nonLoc.length ? nonLoc[0] : '';
+    var teacher = '';
+    if (nonLoc.length >= 2) {
+      var last = nonLoc[nonLoc.length - 1];
+      if (last !== name && looksLikeTeacher(last)) teacher = last;
+    }
+    var location = '';
+    for (var i = 0; i < tokens.length; i++) {
+      if (looksLikeLocation(tokens[i])) { location = tokens[i]; break; }
+    }
+    return { name: name, teacher: teacher, location: location };
+  }
+
+  // ==================== 主入口 ====================
+
+  /**
+   * 解析课表文本
+   * @param {string} text 多行文本
+   * @param {object} opts { sectionTimes: [{label,start,end}], totalWeeks: Number }
+   * @returns {{ items: Array, warnings: Array<string> }}
+   *   item: { name, teacher, location, day, startSection, endSection, weeks, raw }
+   *   startSection/endSection/weeks 可能为 null（识别失败，留待确认页手工修正）
+   */
+  function parseScheduleText(text, opts) {
+    opts = opts || {};
+    var sectionTimes = Array.isArray(opts.sectionTimes) ? opts.sectionTimes : null;
+    var items = [];
+    var warnings = [];
+    var pendingName = ''; // 上一行识别出的课程名（处理「课程名一行、详情一行」的排版）
+
+    var lines = String(text == null ? '' : text).split(/\r?\n/);
+    for (var li = 0; li < lines.length; li++) {
+      var raw = lines[li].trim();
+      if (!raw) continue;
+      var s = normalizeLine(raw);
+
+      var days = extractDays(s);
+      var wk = extractWeeks(s);
+      var sec = extractSections(s);
+      var timeSec = null;
+
+      // 去掉已识别片段，剩下的部分用来拆名称/地点/教师
+      var rest = s;
+      var removeMatched = function (arr) {
+        for (var k = 0; k < arr.length; k++) rest = rest.split(arr[k]).join(' ');
+      };
+
+      // 表头/无关行：多星期且无节次 → 整行跳过
+      if (days.length >= 3 && !sec) continue;
+      if (HEADER_WORDS.test(s) && !sec && !days.length) continue;
+
+      // 显式教师标注：教师:张三 / 老师:张三
+      var teacherExplicit = '';
+      var tm = /(?:教师|老师|授课)[:：]\s*([^\s,;，]+)/.exec(rest);
+      if (tm) teacherExplicit = tm[1];
+
+      // 节次识别：先标准节次 → 时间映射 → 紧凑兜底
+      if (!sec) {
+        timeSec = extractSectionsByTime(s, sectionTimes);
+        if (timeSec) sec = timeSec;
+      }
+      if (!sec) {
+        // 先从副本中剥离周次片段，再做紧凑节次兜底（防止「1-16周」被误读为「1-1节」）
+        var restNoWeeks = rest;
+        for (var k2 = 0; k2 < wk.matched.length; k2++) {
+          restNoWeeks = restNoWeeks.split(wk.matched[k2]).join(' ');
+        }
+        var bare = extractBareSections(restNoWeeks);
+        if (bare) sec = bare;
+      }
+
+      // 清理 rest：去掉星期、周次、节次、时间、显式教师片段
+      var dayMatches = s.match(/(?:星期|周|礼拜)\s*[一二三四五六日天]/g) || [];
+      removeMatched(dayMatches);
+      removeMatched(wk.matched);
+      if (sec && sec.matched) rest = rest.split(sec.matched).join(' ');
+      if (timeSec && timeSec.matched) rest = rest.split(timeSec.matched).join(' ');
+      if (/(单周|\(单\))/.test(rest)) rest = rest.replace(/单周|\(单\)/g, ' ');
+      if (/(双周|\(双\))/.test(rest)) rest = rest.replace(/双周|\(双\)/g, ' ');
+      if (teacherExplicit) rest = rest.replace(/(?:教师|老师|授课)[:：]\s*[^\s,;，]+/, ' ');
+      rest = rest.replace(/第?\s*节/g, ' ');
+
+      var parts = splitRest(rest);
+
+      // 名称判定：仅当「该行只有一个人名样 token、没有其他教师候选」时，
+      // 才认为它是教师并沿用上一行的课程名上下文（如「教学楼B105 陈老师」详情行）。
+      // 行内已有独立教师候选（parts.teacher 非空）时，说明 parts.name 是真课程名，严禁互换。
+      var name = parts.name;
+      var teacher = parts.teacher;
+      if (name && pendingName && !teacher && looksLikeTeacher(name)) {
+        teacher = name;
+        name = pendingName;
+      }
+      if (!name) name = pendingName;
+      if (name) pendingName = name;
+      // 显式「教师:xxx」标注优先级最高
+      if (teacherExplicit) teacher = teacherExplicit;
+
+      // 整行啥也没匹配到：当作待定课程名（可能下一行是详情），不告警
+      if (!name && !days.length && !sec && !wk.weeks) {
+        if (s.length <= 30 && /[\u4e00-\u9fa5A-Za-z]/.test(s)) pendingName = s.split(/\s+/)[0];
+        continue;
+      }
+
+      if (!name) {
+        warnings.push('无法识别课程名：' + raw);
+        continue;
+      }
+      if (!days.length) {
+        warnings.push('《' + name + '》缺少星期，已跳过：' + raw);
+        continue;
+      }
+
+      // 每个星期生成一条（同一门课一周多次课）
+      for (var di = 0; di < days.length; di++) {
+        items.push({
+          name: name,
+          teacher: teacherExplicit || parts.teacher || '',
+          location: parts.location || '',
+          day: days[di],
+          startSection: sec ? sec.start : null,
+          endSection: sec ? sec.end : null,
+          weeks: wk.weeks || null,
+          raw: raw
+        });
+      }
+
+      if (!sec) warnings.push('《' + name + '》未能识别节次，请在确认页手工补填');
+      if (!wk.weeks) { /* 周次缺省，由确认页按 totalWeeks 给默认 */ }
+    }
+
+    return { items: items, warnings: warnings };
+  }
+
+  // ==================== 导出 ====================
+
+  return {
+    parseScheduleText: parseScheduleText,
+    parseWeeksSpec: parseWeeksSpec,
+    DAY_MAP: DAY_MAP
+  };
+});

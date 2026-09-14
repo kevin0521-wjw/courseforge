@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const html = await readFile(join(ROOT, 'web', 'index.html'), 'utf-8');
-const files = ['core.js', 'storage.js', 'render.js', 'app.js'];
+const files = ['core.js', 'storage.js', 'render.js', 'parser.js', 'importer.js', 'app.js'];
 
 // HTML 中声明的所有 id
 const htmlIds = new Set();

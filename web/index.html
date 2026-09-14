@@ -46,6 +46,7 @@
           <button id="btnViewList" class="btn btn-switch" data-action="view-list" role="tab" aria-label="列表视图">列表</button>
         </div>
         <div class="tool-actions">
+          <button class="btn btn-ghost" data-action="open-import" title="从照片 / PDF / 文本导入课表">导入课表</button>
           <button class="btn btn-ghost" data-action="export-json" title="导出 JSON 备份">导出备份</button>
           <button class="btn btn-ghost" data-action="import-json" title="从 JSON 备份恢复">导入恢复</button>
           <button class="btn btn-ghost" data-action="clear-sample" id="btnClearSample" hidden>清空示例</button>
@@ -89,8 +90,17 @@
           <input type="number" id="settingsSectionsPerDay" name="settingsSectionsPerDay" min="1" max="14" step="1" required>
         </label>
 
+        <label class="field">
+          <span class="field-label">作息预设</span>
+          <select id="settingsTimePreset" name="settingsTimePreset">
+            <option value="keep">保持当前作息</option>
+            <option value="shu">上海大学（12 节）</option>
+            <option value="generic">通用默认（12 节）</option>
+          </select>
+        </label>
+
         <div class="field">
-          <span class="field-label">作息时间表（只读，可通过备份文件自定义）</span>
+          <span class="field-label">作息时间表（选预设后保存生效）</span>
           <div id="sectionTimesPreview" class="section-times"></div>
         </div>
       </div>
@@ -178,6 +188,61 @@
     </div>
   </div>
 
+  <!-- 课表导入弹窗（照片 OCR / PDF / 粘贴文本） -->
+  <div id="importModal" class="modal-overlay" hidden>
+    <div class="modal modal-wide" role="dialog" aria-labelledby="importTitle">
+      <div class="modal-head">
+        <h2 id="importTitle">导入课表</h2>
+        <button class="btn btn-icon" data-action="close-import" aria-label="关闭">
+          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="import-tabs">
+        <button class="btn btn-switch active" data-imp-tab="text">粘贴文本</button>
+        <button class="btn btn-switch" data-imp-tab="image">照片识别</button>
+        <button class="btn btn-switch" data-imp-tab="pdf">PDF 导入</button>
+      </div>
+
+      <div class="import-body">
+        <div data-imp-pane="text">
+          <textarea id="importText" rows="8" placeholder="粘贴教务系统课表文本或照片识别结果，每行一门课，例如：&#10;高等数学A1 周一 3-4节 第1-16周 D楼202 张三&#10;数据结构 周三 5,6节 1-16周(单) BJ102 李四&#10;大学体育 周五 18:00-19:40 体育馆 赵六"></textarea>
+          <div class="import-hint-row">
+            <span class="hint">支持：周一/星期一、第3-4节/3,4节、单双周、18:00-19:40 时间段等常见格式</span>
+            <button class="btn btn-primary" data-action="import-parse-text">解析文本</button>
+          </div>
+        </div>
+
+        <div data-imp-pane="image" hidden>
+          <input type="file" id="importImage" accept="image/*" hidden>
+          <button class="btn btn-primary" data-action="import-pick-image">选择课表照片</button>
+          <span class="hint">支持手机拍照 / 截图，自动识别课程、时间、地点、教师（首次需联网加载识别引擎）</span>
+        </div>
+
+        <div data-imp-pane="pdf" hidden>
+          <input type="file" id="importPdf" accept="application/pdf,.pdf" hidden>
+          <button class="btn btn-primary" data-action="import-pick-pdf">选择课表 PDF</button>
+          <span class="hint">文字版 PDF 直接提取；扫描版 PDF 自动转图片识别</span>
+        </div>
+
+        <div id="importStatus" class="import-status" hidden></div>
+        <div id="importProgressWrap" class="progress" hidden><div id="importProgressBar"></div></div>
+        <div id="importResult" class="import-result"></div>
+      </div>
+
+      <div class="modal-foot">
+        <select id="importMode" class="mode-select" aria-label="导入方式">
+          <option value="append">追加到现有课表</option>
+          <option value="replace">替换全部课程</option>
+        </select>
+        <span id="importSummary" class="hint"></span>
+        <span class="flex-spacer"></span>
+        <button type="button" class="btn btn-ghost" data-action="close-import">取消</button>
+        <button type="button" class="btn btn-primary" id="btnImportApply" data-action="import-apply" disabled>导入所选</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 隐藏的导入文件选择器 -->
   <input type="file" id="importFile" accept="application/json,.json" hidden>
 
@@ -187,6 +252,8 @@
   <script src="js/core.js"></script>
   <script src="js/storage.js"></script>
   <script src="js/render.js"></script>
+  <script src="js/parser.js"></script>
+  <script src="js/importer.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

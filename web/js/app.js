@@ -10,6 +10,7 @@
   var CF = window.CourseForge;
   var CR = window.CourseRender;
   var ST = window.CourseStorage;
+  var CI = window.CourseImporter;
 
   if (!CF || !CR || !ST) {
     // 依赖缺失属于致命错误，直接提示而不是白屏
@@ -303,6 +304,12 @@
       sectionsPerDay: Number(sectionsPerDay.value),
       sectionTimes: state.settings.sectionTimes
     });
+    // 作息预设：选了预设就用预设节次覆盖（并同步每日节次数）
+    var presetSel = document.getElementById('settingsTimePreset');
+    if (presetSel && presetSel.value !== 'keep') {
+      next.sectionTimes = CF.getPresetTimes(presetSel.value);
+      next.sectionsPerDay = next.sectionTimes.length;
+    }
     state.settings = next;
     state.displayWeek = clampWeek(state.displayWeek);
     persist();
@@ -310,6 +317,26 @@
     refreshAll();
     showToast('设置已保存');
     panel.hidden = true;
+  }
+
+  // ==================== 课表导入（照片/PDF/文本） ====================
+
+  /** 导入器回调：把确认过的课程写入主状态 */
+  function applyImported(list, mode, skipped) {
+    if (!list || !list.length) {
+      showToast('没有可导入的课程（请检查名称/节次是否完整）');
+      return;
+    }
+    if (mode === 'replace') {
+      if (!window.confirm('将用导入的 ' + list.length + ' 门课程替换现有 ' + state.courses.length + ' 门，确定吗？')) return;
+      state.courses = list;
+    } else {
+      state.courses = state.courses.concat(list);
+    }
+    persist();
+    if (CI) CI.close();
+    refreshAll();
+    showToast('已导入 ' + list.length + ' 门课程' + (skipped ? '（' + skipped + ' 条无效已跳过）' : ''));
   }
 
   // ==================== Toast ====================
@@ -363,6 +390,7 @@
   function onDocumentClick(e) {
     // 弹窗遮罩点击关闭
     if (e.target && e.target.id === 'modalOverlay') { closeModal(); return; }
+    if (e.target && e.target.id === 'importModal') { if (CI) CI.close(); return; }
 
     // data-action 按钮（最近的一个）
     var el = e.target.closest ? e.target.closest('[data-action]') : null;
@@ -421,6 +449,8 @@
   function onKeydown(e) {
     if (e.key === 'Escape') {
       closeModal();
+      var imp = document.getElementById('importModal');
+      if (imp && !imp.hidden && CI) CI.close();
       var panel = document.getElementById('settingsPanel');
       if (panel) panel.hidden = true;
     }
@@ -451,6 +481,12 @@
     state.displayWeek = clampWeek(realWeek());
 
     bindEvents();
+    // 导入模块挂载（照片 OCR / PDF / 粘贴文本 → 解析确认 → 入库）
+    if (CI) CI.mount({
+      getSettings: function () { return state.settings; },
+      apply: applyImported,
+      toast: showToast
+    });
     // 单双周快捷按钮（静态内容，只需渲染一次）
     var parityBar = document.getElementById('parityBar');
     if (parityBar && !parityBar.childElementCount) parityBar.innerHTML = CR.renderParityButtons();

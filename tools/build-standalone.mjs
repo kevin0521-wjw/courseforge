@@ -12,7 +12,7 @@ const OUT = join(ROOT, 'dist', 'CourseForge-standalone.html');
 
 const html = await readFile(join(WEB, 'index.html'), 'utf-8');
 const css = await readFile(join(WEB, 'css', 'style.css'), 'utf-8');
-const scripts = ['core.js', 'storage.js', 'render.js', 'app.js'];
+const scripts = ['core.js', 'storage.js', 'render.js', 'parser.js', 'importer.js', 'app.js'];
 let out = html.replace(
   /<link rel="stylesheet" href="css\/style.css">/,
   '<style>\n' + css + '\n</style>'
