@@ -113,7 +113,7 @@
     return (date.getMonth() + 1) + '.' + date.getDate();
   }
 
-  function renderWeekNav(displayWeek, settings, realWeek) {
+  function renderWeekNav(displayWeek, settings, realWeek, semesterName) {
     var total = settings.totalWeeks;
     var mon = CF.mondayOfWeek(settings.semesterStart, displayWeek);
     var rangeText = mon ? md(mon) + ' - ' + md(CF.addDays(mon, visibleDays(settings) - 1)) : '';
@@ -125,6 +125,7 @@
     html += '<strong>第 ' + displayWeek + ' 周</strong>';
     html += '<span class="muted">' + esc(rangeText) + '</span>';
     if (isReal) html += '<span class="chip chip-brand">本周</span>';
+    if (semesterName) html += '<span class="chip sem-chip" title="当前学期">' + esc(semesterName) + '</span>';
     html += '</div>';
     html += '<button class="btn btn-icon" data-action="next-week" title="下一周" aria-label="下一周">' + icon('right') + '</button>';
     html += '<button class="btn btn-ghost" data-action="this-week"' + (isReal ? ' disabled' : '') + '>回到本周</button>';
@@ -398,6 +399,48 @@
     return lines.join('\n');
   }
 
+  // ==================== 多学期 ====================
+
+  /** 学期开始日期摘要：'2026-09-14' → '9.14 开学' */
+  function startBrief(semesterStart) {
+    var d = CF.parseDate(semesterStart);
+    if (!d) return '未设置开学日期';
+    return (d.getMonth() + 1) + '.' + d.getDate() + ' 开学';
+  }
+
+  /**
+   * 学期列表（设置抽屉内）
+   * 当前学期显示「当前」标记，其余项提供「切换」按钮
+   */
+  function renderSemesterList(semesters, activeId) {
+    var list = Array.isArray(semesters) ? semesters : [];
+    if (!list.length) return '<div class="hint">暂无学期</div>';
+    var html = '<div class="sem-list">';
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      var isActive = s.id === activeId;
+      html += '<div class="sem-row' + (isActive ? ' sem-active' : '') + '" data-id="' + esc(s.id) + '">';
+      html += '<div class="sem-main">';
+      html += '<span class="sem-name">' + esc(s.name || ('学期 ' + (i + 1))) + '</span>';
+      html += '<span class="sem-meta">' + esc(startBrief(s.settings && s.settings.semesterStart)) +
+        ' · ' + ((s.settings && s.settings.totalWeeks) || 0) + ' 周 · ' +
+        ((s.courses && s.courses.length) || 0) + ' 门课</span>';
+      html += '</div>';
+      html += '<div class="sem-actions">';
+      if (isActive) {
+        html += '<span class="chip chip-brand">当前</span>';
+      } else {
+        html += '<button type="button" class="btn btn-ghost" data-action="switch-semester" data-id="' + esc(s.id) + '">切换</button>';
+      }
+      html += '<button type="button" class="btn btn-icon" data-action="rename-semester" data-id="' + esc(s.id) + '" title="重命名" aria-label="重命名">' + icon('edit', 14) + '</button>';
+      html += '<button type="button" class="btn btn-icon btn-danger-icon" data-action="delete-semester" data-id="' + esc(s.id) + '" title="删除学期" aria-label="删除学期">' + icon('trash', 14) + '</button>';
+      html += '</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
   // ==================== 导出 ====================
 
   return {
@@ -417,6 +460,8 @@
     renderWeeksGrid: renderWeeksGrid,
     renderParityButtons: renderParityButtons,
     renderColorSwatches: renderColorSwatches,
-    clashConfirmText: clashConfirmText
+    clashConfirmText: clashConfirmText,
+    startBrief: startBrief,
+    renderSemesterList: renderSemesterList
   };
 });

@@ -10,9 +10,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # 只为启用 jsdom 全流程用例（可选依赖）；产物本身仍然零依赖
+      - name: 安装测试依赖
+        run: npm install --no-audit --no-fund
       - name: 单元测试与渲染测试
-        run: node --test tests/
-      - name: DOM 静态检查
+        # Node 22 的 --test 不认「目录」参数（node --test tests/ 会报 MODULE_NOT_FOUND，
+        # 导致 CI 直接红），必须不带参数让它自动发现 *.test.(mjs|cjs)。
+        # jsdom 的定时器由测试内的 window.close() 清理，无需 --test-force-exit 强杀。
+        run: node --test
+      - name: DOM / data-action / CSS 静态检查
         run: node tools/check-dom.mjs
       - name: 单文件打包冒烟
         run: node tools/build-standalone.mjs

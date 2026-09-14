@@ -265,7 +265,7 @@ test('移动端 CSS：复合选择器也必须满足 44px 点击区', async () =
   const css = await readFile(fileURLToPath(new URL('../web/css/style.css', import.meta.url)), 'utf-8');
   const mobile = extractBlock(css, '@media (max-width: 768px)');
   // 这些选择器优先级高于通用的 .btn，遗漏任何一个都会留下 32~40px 的小按钮
-  for (const sel of ['.btn', '.btn-switch', '.tool-actions .btn', '.parity-bar .btn', '.lr-actions .btn', '.week-btn', '.swatch']) {
+  for (const sel of ['.btn', '.btn-switch', '.tool-actions .btn', '.parity-bar .btn', '.lr-actions .btn', '.sem-actions .btn', '.week-btn', '.swatch']) {
     assert.ok(mobile.includes(sel), '移动端必须显式覆盖 ' + sel + ' 的点击区');
   }
   assert.ok(/min-height:\s*44px/.test(mobile), '移动端必须存在 min-height: 44px 规则');

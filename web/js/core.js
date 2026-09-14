@@ -438,6 +438,165 @@
     return s;
   }
 
+  // ==================== 多学期（工作区） ====================
+  //
+  // 数据结构（schema v2）：
+  //   { version: 2, activeId, semesters: [ { id, name, settings, courses } ] }
+  // 旧版（v1）为扁平结构 { version: 1, courses, settings }，由 normalizeWorkspace 自动迁移，
+  // 迁移只做「套一层壳」，课程与设置的清洗仍走 normalizeCourse / normalizeSettings，不丢数据。
+
+  /** 由学期开始日期推导默认学期名：8-12 月与次年 1 月算秋季，2-7 月算春季 */
+  function defaultSemesterName(semesterStart) {
+    var d = parseDate(semesterStart);
+    if (!d) return '我的课表';
+    var m = d.getMonth() + 1;
+    var y = d.getFullYear();
+    if (m >= 8) return y + ' 秋季学期';
+    if (m === 1) return (y - 1) + ' 秋季学期';
+    return y + ' 春季学期';
+  }
+
+  /** 清洗单个学期；id 缺失时用 fallbackId 兜底 */
+  function normalizeSemester(raw, fallbackId) {
+    raw = (raw && typeof raw === 'object') ? raw : {};
+    var settings = normalizeSettings(raw.settings);
+    var courses = Array.isArray(raw.courses) ? raw.courses.map(normalizeCourse) : [];
+    var name = String(raw.name == null ? '' : raw.name).trim();
+    if (!name) name = defaultSemesterName(settings.semesterStart);
+    if (name.length > 20) name = name.slice(0, 20);
+    var id = (raw.id != null && String(raw.id)) ? String(raw.id) : String(fallbackId || uid());
+    return { id: id, name: name, settings: settings, courses: courses };
+  }
+
+  /**
+   * 清洗整个工作区，同时兼容 v1 旧数据。
+   * @returns {{activeId: string, semesters: Array}|null} 完全无数据时返回 null（由上层播种示例）
+   */
+  function normalizeWorkspace(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+
+    // v2（或任何带 semesters 数组的结构）
+    if (Array.isArray(raw.semesters) && raw.semesters.length) {
+      var list = [];
+      var seen = {};
+      for (var i = 0; i < raw.semesters.length; i++) {
+        var sem = normalizeSemester(raw.semesters[i]);
+        // 重复 id 会让「切换/删除」命中错误的学期，这里直接重新发号
+        while (seen[sem.id]) sem.id = uid();
+        seen[sem.id] = true;
+        list.push(sem);
+      }
+      var activeId = raw.activeId == null ? '' : String(raw.activeId);
+      var found = false;
+      for (var j = 0; j < list.length; j++) {
+        if (list[j].id === activeId) { found = true; break; }
+      }
+      if (!found) activeId = list[0].id;   // activeId 失效时回落到第一个，避免白屏
+      return { activeId: activeId, semesters: list };
+    }
+
+    // v1 迁移：扁平结构套一层壳
+    if (Array.isArray(raw.courses) || (raw.settings && typeof raw.settings === 'object')) {
+      var one = normalizeSemester({ settings: raw.settings, courses: raw.courses });
+      return { activeId: one.id, semesters: [one] };
+    }
+
+    return null;
+  }
+
+  /** 按 id 查学期，找不到返回 null */
+  function findSemester(ws, id) {
+    if (!ws || !Array.isArray(ws.semesters)) return null;
+    for (var i = 0; i < ws.semesters.length; i++) {
+      if (ws.semesters[i].id === id) return ws.semesters[i];
+    }
+    return null;
+  }
+
+  /** 取当前激活的学期 */
+  function activeSemester(ws) {
+    return ws ? findSemester(ws, ws.activeId) : null;
+  }
+
+  /** 新学期默认开始日期：当前学期结束后那一周的周一 */
+  function nextSemesterStart(settings) {
+    var d = parseDate(settings && settings.semesterStart);
+    if (!d) return formatDate(mondayOf(new Date()));
+    var weeks = (settings && settings.totalWeeks) || 20;
+    return formatDate(mondayOf(addDays(d, weeks * 7)));
+  }
+
+  /**
+   * 由当前学期推导「新建学期」的默认值（名称 + 设置）
+   * 沿用总周数/每日节次/作息，只把开始日期顺延到下学期
+   */
+  function nextSemesterDefaults(current) {
+    var cur = normalizeSettings(current && current.settings);
+    var start = nextSemesterStart(current && current.settings);
+    return {
+      name: defaultSemesterName(start),
+      settings: normalizeSettings({
+        semesterStart: start,
+        totalWeeks: cur.totalWeeks,
+        sectionsPerDay: cur.sectionsPerDay,
+        showWeekend: cur.showWeekend,
+        sectionTimes: cur.sectionTimes
+      })
+    };
+  }
+
+  /**
+   * 新增学期（不修改入参）
+   * @param form { name, settings, courses }
+   */
+  function addSemester(ws, form) {
+    var sem = normalizeSemester({
+      name: form && form.name,
+      settings: form && form.settings,
+      courses: form && form.courses
+    });
+    var list = (ws && Array.isArray(ws.semesters)) ? ws.semesters.slice() : [];
+    list.push(sem);
+    return {
+      workspace: { activeId: sem.id, semesters: list },
+      semester: sem
+    };
+  }
+
+  /** 重命名学期；名称为空视为失败 */
+  function renameSemester(ws, id, name) {
+    var clean = String(name == null ? '' : name).trim();
+    if (!clean) return { ok: false, reason: 'empty', workspace: ws };
+    if (clean.length > 20) clean = clean.slice(0, 20);
+    var hit = false;
+    var list = (ws && ws.semesters ? ws.semesters : []).map(function (s) {
+      if (s.id !== id) return s;
+      hit = true;
+      return { id: s.id, name: clean, settings: s.settings, courses: s.courses };
+    });
+    if (!hit) return { ok: false, reason: 'notfound', workspace: ws };
+    return { ok: true, workspace: { activeId: ws.activeId, semesters: list } };
+  }
+
+  /**
+   * 删除学期；最后一个学期不允许删除（否则工作区为空，页面无法工作）
+   * 删掉的若是当前学期，自动切到剩下的第一个
+   */
+  function removeSemester(ws, id) {
+    if (!ws || !Array.isArray(ws.semesters) || !ws.semesters.length) {
+      return { ok: false, reason: 'empty', workspace: ws };
+    }
+    if (ws.semesters.length <= 1) return { ok: false, reason: 'last', workspace: ws };
+    var hit = false;
+    var list = ws.semesters.filter(function (s) {
+      if (s.id === id) { hit = true; return false; }
+      return true;
+    });
+    if (!hit) return { ok: false, reason: 'notfound', workspace: ws };
+    var activeId = ws.activeId === id ? list[0].id : ws.activeId;
+    return { ok: true, workspace: { activeId: activeId, semesters: list } };
+  }
+
   // ==================== 周次文本 ====================
 
   /**
@@ -512,6 +671,17 @@
     courseStatus: courseStatus,
     normalizeCourse: normalizeCourse,
     normalizeSettings: normalizeSettings,
+    // 多学期（工作区）
+    defaultSemesterName: defaultSemesterName,
+    normalizeSemester: normalizeSemester,
+    normalizeWorkspace: normalizeWorkspace,
+    findSemester: findSemester,
+    activeSemester: activeSemester,
+    nextSemesterStart: nextSemesterStart,
+    nextSemesterDefaults: nextSemesterDefaults,
+    addSemester: addSemester,
+    renameSemester: renameSemester,
+    removeSemester: removeSemester,
     weeksText: weeksText,
     buildSampleCourses: buildSampleCourses
   };

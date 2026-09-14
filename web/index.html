@@ -94,6 +94,12 @@
       </div>
 
       <div class="drawer-body">
+        <div class="field">
+          <span class="field-label">学期（每个学期的课程与设置互相独立）</span>
+          <div id="semesterList"></div>
+          <button type="button" class="btn btn-ghost sem-add-btn" data-action="open-semester-modal">新建学期</button>
+        </div>
+
         <label class="field">
           <span class="field-label">学期开始日期（建议选周一）</span>
           <input type="date" id="settingsSemesterStart" name="settingsSemesterStart" required>
@@ -267,6 +273,44 @@
 
   <!-- 隐藏的导入文件选择器 -->
   <input type="file" id="importFile" accept="application/json,.json" hidden>
+
+  <!-- 新建学期弹窗 -->
+  <div id="semesterModal" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-labelledby="semesterTitle">
+      <div class="modal-head">
+        <h2 id="semesterTitle">新建学期</h2>
+        <button class="btn btn-icon" data-action="close-semester-modal" aria-label="关闭">
+          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <label class="field">
+        <span class="field-label">学期名称（最多 20 字）</span>
+        <input type="text" id="semesterName" maxlength="20" placeholder="如：2027 春季学期">
+      </label>
+
+      <label class="field">
+        <span class="field-label">开学日期（建议选周一）</span>
+        <input type="date" id="semesterStart" required>
+      </label>
+
+      <label class="field field-check">
+        <input type="checkbox" id="semesterKeepTimes" checked>
+        <span class="field-label">沿用当前学期的总周数、每日节次与作息时间</span>
+      </label>
+
+      <label class="field field-check">
+        <input type="checkbox" id="semesterCopyCourses">
+        <span class="field-label">复制当前学期的课程（适合课程重复的同学，之后可再改）</span>
+      </label>
+
+      <div class="modal-foot">
+        <span class="flex-spacer"></span>
+        <button type="button" class="btn btn-ghost" data-action="close-semester-modal">取消</button>
+        <button type="button" class="btn btn-primary" data-action="create-semester">创建并切换</button>
+      </div>
+    </div>
+  </div>
 
   <!-- 轻提示 -->
   <div id="toast" class="toast" hidden></div>

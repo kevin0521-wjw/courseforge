@@ -25,8 +25,10 @@
   // ==================== 状态 ====================
 
   var state = {
-    courses: [],        // 课程列表（已 normalize）
-    settings: null,     // 设置（已 normalize）
+    semesters: [],      // 全部学期（含当前）；当前学期的 courses/settings 由 persist() 同步进来
+    activeId: null,     // 当前学期 id
+    courses: [],        // 当前学期课程（工作副本，已 normalize）
+    settings: null,     // 当前学期设置（已 normalize）
     displayWeek: 1,     // 当前展示周
     view: 'week',       // 'week' | 'list'
     editingId: null,    // 弹窗正在编辑的课程 id（null = 新增）
@@ -34,6 +36,20 @@
     draftColor: 'blue', // 弹窗当前选中颜色
     themeMode: 'system' // 'system' | 'light' | 'dark'
   };
+
+  /** 取当前学期对象（找不到返回 null） */
+  function activeSemesterObj() {
+    for (var i = 0; i < state.semesters.length; i++) {
+      if (state.semesters[i].id === state.activeId) return state.semesters[i];
+    }
+    return null;
+  }
+
+  /** 当前学期名称（用于界面展示） */
+  function activeName() {
+    var s = activeSemesterObj();
+    return s ? s.name : '';
+  }
 
   /** 真实日期对应的学期周次 */
   function realWeek() {
@@ -55,9 +71,34 @@
     return null;
   }
 
-  /** 持久化当前状态 */
+  /**
+   * 持久化整个工作区（schema v2）
+   * 关键：先把工作副本回写进当前学期，再整体存盘 —— 这样「切换/新建学期的瞬间」不会丢当前进度
+   */
   function persist() {
-    ST.save({ version: 1, courses: state.courses, settings: state.settings });
+    var cur = activeSemesterObj();
+    if (cur) {
+      cur.courses = state.courses;
+      cur.settings = state.settings;
+    }
+    ST.save({ version: 2, activeId: state.activeId, semesters: state.semesters });
+  }
+
+  /**
+   * 把某个学期装载成当前工作副本
+   * 注意：调用前必须已 persist()，否则当前学期的改动会丢
+   */
+  function loadSemester(id, keepWeek) {
+    var target = null;
+    for (var i = 0; i < state.semesters.length; i++) {
+      if (state.semesters[i].id === id) target = state.semesters[i];
+    }
+    if (!target) return false;
+    state.activeId = target.id;
+    state.courses = target.courses.map(CF.normalizeCourse);
+    state.settings = CF.normalizeSettings(target.settings);
+    state.displayWeek = keepWeek ? clampWeek(state.displayWeek) : clampWeek(realWeek());
+    return true;
   }
 
   // ==================== 统一刷新入口 ====================
@@ -72,7 +113,7 @@
     var el;
 
     el = document.getElementById('weekNav');
-    if (el) el.innerHTML = CR.renderWeekNav(state.displayWeek, state.settings, realWeek());
+    if (el) el.innerHTML = CR.renderWeekNav(state.displayWeek, state.settings, realWeek(), activeName());
 
     el = document.getElementById('statsBar');
     if (el) el.innerHTML = CR.renderStats(state.courses, state.displayWeek, state.settings);
@@ -96,6 +137,10 @@
     var hasDemo = state.courses.some(function (c) { return String(c.id).indexOf('demo_') === 0; });
     var bcs = document.getElementById('btnClearSample');
     if (bcs) bcs.hidden = !hasDemo;
+
+    // 学期列表（设置抽屉内）
+    var semList = document.getElementById('semesterList');
+    if (semList) semList.innerHTML = CR.renderSemesterList(state.semesters, state.activeId);
   }
 
   // ==================== 课程弹窗 ====================
@@ -199,7 +244,12 @@
   }
 
   function exportJSON() {
-    var payload = JSON.stringify({ version: 1, courses: state.courses, settings: state.settings }, null, 2);
+    persist(); // 先把工作副本同步进学期，避免导出到旧的课程列表
+    var payload = JSON.stringify({
+      version: 2,
+      activeId: state.activeId,
+      semesters: state.semesters
+    }, null, 2);
     var blob = new Blob([payload], { type: 'application/json' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -208,7 +258,7 @@
     a.click();
     a.remove();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
-    showToast('备份已导出');
+    showToast('备份已导出（' + state.semesters.length + ' 个学期）');
   }
 
   function onImportFile(e) {
@@ -224,20 +274,26 @@
         window.alert('导入失败：文件不是合法的 JSON。');
         return;
       }
-      if (!data || !Array.isArray(data.courses)) {
+      // 兼容 v1（扁平）与 v2（多学期）：统一走 normalizeWorkspace
+      var ws = CF.normalizeWorkspace(data);
+      if (!ws) {
         window.alert('导入失败：文件格式不符合 CourseForge 备份结构。');
         return;
       }
-      var courses = data.courses.map(CF.normalizeCourse);
-      var settings = CF.normalizeSettings(data.settings);
-      if (!window.confirm('导入将替换当前全部数据（' + state.courses.length + ' 门课 → ' + courses.length + ' 门课），确定继续吗？')) return;
-      state.courses = courses;
-      state.settings = settings;
-      state.displayWeek = clampWeek(realWeek());
+      var inCourses = 0;
+      for (var i = 0; i < ws.semesters.length; i++) inCourses += ws.semesters[i].courses.length;
+      var msg = '导入将替换当前全部数据，确定继续吗？\n\n'
+        + '当前：' + state.semesters.length + ' 个学期 / ' + state.courses.length + ' 门课\n'
+        + '导入：' + ws.semesters.length + ' 个学期 / ' + inCourses + ' 门课';
+      if (!window.confirm(msg)) return;
+
+      state.semesters = ws.semesters;
+      // loadSemester 会 normalize 并把展示周切到本学期
+      loadSemester(ws.activeId, false);
       persist();
       syncSettingsUI();
       refreshAll();
-      showToast('导入成功，共 ' + courses.length + ' 门课');
+      showToast('导入成功，共 ' + ws.semesters.length + ' 个学期 / ' + inCourses + ' 门课');
     };
     reader.onerror = function () {
       window.alert('导入失败：文件读取错误。');
@@ -255,18 +311,173 @@
     showToast('示例课程已清除');
   }
 
+  /** 清空当前学期的课程（其它学期不受影响） */
   function onClearAll() {
-    if (!state.courses.length && !ST.load()) {
-      showToast('当前没有数据');
+    if (!state.courses.length) {
+      showToast('当前学期没有课程');
       return;
     }
-    if (!window.confirm('确定清空全部课程数据吗？此操作不可恢复！')) return;
+    if (!window.confirm('确定清空当前学期「' + activeName() + '」的全部课程吗？\n其它学期的数据不受影响。')) return;
     if (!window.confirm('再次确认：真的要清空吗？建议先「导出备份」。')) return;
     state.courses = [];
-    ST.clear();
     persist();
     refreshAll();
-    showToast('数据已清空');
+    showToast('当前学期课程已清空');
+  }
+
+  // ==================== 多学期 ====================
+
+  /** 打开「新建学期」弹窗，并预填下一个学期的默认值 */
+  function openSemesterModal() {
+    var d = CF.nextSemesterDefaults(activeSemesterObj());
+    var nameEl = document.getElementById('semesterName');
+    var startEl = document.getElementById('semesterStart');
+    var keepEl = document.getElementById('semesterKeepTimes');
+    var copyEl = document.getElementById('semesterCopyCourses');
+    if (!nameEl || !startEl) return;
+    nameEl.value = d.name;
+    startEl.value = d.settings.semesterStart;
+    if (keepEl) keepEl.checked = true;
+    if (copyEl) copyEl.checked = false;
+    document.getElementById('semesterModal').hidden = false;
+    try { nameEl.focus({ preventScroll: true }); } catch (e) { /* 忽略 */ }
+  }
+
+  function closeSemesterModal() {
+    var m = document.getElementById('semesterModal');
+    if (m) m.hidden = true;
+  }
+
+  /** 切换当前学期 */
+  function switchSemester(id) {
+    if (!id || id === state.activeId) return;
+    persist(); // 先把当前学期的改动落盘，否则切换即丢失
+    var target = null;
+    for (var i = 0; i < state.semesters.length; i++) {
+      if (state.semesters[i].id === id) target = state.semesters[i];
+    }
+    if (!target) return;
+    loadSemester(id, false);
+    persist();
+    syncSettingsUI();
+    syncSemesterModalDefaults();
+    refreshAll();
+    showToast('已切换到「' + target.name + '」');
+  }
+
+  /** 新建学期并立即切过去 */
+  function onCreateSemester() {
+    var nameEl = document.getElementById('semesterName');
+    var startEl = document.getElementById('semesterStart');
+    var keepEl = document.getElementById('semesterKeepTimes');
+    var copyEl = document.getElementById('semesterCopyCourses');
+    if (!nameEl || !startEl) return;
+
+    var start = CF.parseDate(startEl.value);
+    if (!start) {
+      showToast('请选择开学日期');
+      return;
+    }
+    var keep = keepEl ? keepEl.checked : true;
+    var copy = copyEl ? copyEl.checked : false;
+
+    persist(); // 保证旧学期的课程/设置是最新的
+
+    var cur = state.settings;
+    var settings = keep
+      ? CF.normalizeSettings({
+        semesterStart: CF.formatDate(start),
+        totalWeeks: cur.totalWeeks,
+        sectionsPerDay: cur.sectionsPerDay,
+        showWeekend: cur.showWeekend,
+        sectionTimes: cur.sectionTimes
+      })
+      : CF.normalizeSettings({ semesterStart: CF.formatDate(start) });
+
+    var courses = copy ? state.courses.map(function (c) {
+      // 不带 id 传入 → normalizeCourse 会重新发号，避免两个学期共用同一课程 id
+      return CF.normalizeCourse({
+        name: c.name, teacher: c.teacher, location: c.location,
+        day: c.day, startSection: c.startSection, endSection: c.endSection,
+        weeks: c.weeks, color: c.color, note: c.note
+      });
+    }) : [];
+
+    var res = CF.addSemester({ activeId: state.activeId, semesters: state.semesters }, {
+      name: nameEl.value,
+      settings: settings,
+      courses: courses
+    });
+    state.semesters = res.workspace.semesters;
+    state.activeId = res.workspace.activeId;
+    state.courses = res.semester.courses;
+    state.settings = res.semester.settings;
+    state.displayWeek = clampWeek(realWeek());
+    persist();
+    closeSemesterModal();
+    syncSettingsUI();
+    syncSemesterModalDefaults();
+    refreshAll();
+    showToast('已创建「' + res.semester.name + '」并切换过去'
+      + (copy ? '，已复制 ' + courses.length + ' 门课' : ''));
+  }
+
+  /** 重命名学期 */
+  function onRenameSemester(id) {
+    var sem = null;
+    for (var i = 0; i < state.semesters.length; i++) {
+      if (state.semesters[i].id === id) sem = state.semesters[i];
+    }
+    if (!sem) return;
+    var name = window.prompt('重命名学期：', sem.name);
+    if (name === null) return;
+    var res = CF.renameSemester({ activeId: state.activeId, semesters: state.semesters }, id, name);
+    if (!res.ok) {
+      showToast(res.reason === 'empty' ? '名称不能为空' : '学期不存在');
+      return;
+    }
+    state.semesters = res.workspace.semesters;
+    persist(); // 必须落盘：改名只改了内存里的学期对象，不写回刷新就丢
+    refreshAll();
+    showToast('已重命名为「' + CF.findSemester(res.workspace, id).name + '」');
+  }
+
+  /** 删除学期（至少保留一个） */
+  function onDeleteSemester(id) {
+    var sem = null;
+    for (var i = 0; i < state.semesters.length; i++) {
+      if (state.semesters[i].id === id) sem = state.semesters[i];
+    }
+    if (!sem) return;
+    if (state.semesters.length <= 1) {
+      showToast('至少要保留一个学期');
+      return;
+    }
+    if (!window.confirm('删除学期「' + sem.name + '」及其 ' + sem.courses.length + ' 门课程？\n此操作不可恢复，建议先「导出备份」。')) return;
+
+    persist(); // 保证当前学期的数据已同步，避免误删旧数据
+    var res = CF.removeSemester({ activeId: state.activeId, semesters: state.semesters }, id);
+    if (!res.ok) {
+      showToast(res.reason === 'last' ? '至少要保留一个学期' : '学期不存在');
+      return;
+    }
+    state.semesters = res.workspace.semesters;
+    // 删掉的是当前学期时会自动切到剩下的第一个，这里重新装载
+    loadSemester(res.workspace.activeId, false);
+    persist();
+    syncSettingsUI();
+    syncSemesterModalDefaults();
+    refreshAll();
+    showToast('已删除学期「' + sem.name + '」');
+  }
+
+  /** 让弹窗里的默认值始终对应当前学期（打开弹窗时也会重算一次） */
+  function syncSemesterModalDefaults() {
+    var d = CF.nextSemesterDefaults(activeSemesterObj());
+    var nameEl = document.getElementById('semesterName');
+    var startEl = document.getElementById('semesterStart');
+    if (nameEl && !nameEl.value) nameEl.value = d.name;
+    if (startEl && !startEl.value) startEl.value = d.settings.semesterStart;
   }
 
   // ==================== 设置抽屉 ====================
@@ -505,6 +716,13 @@
     'import-json': function () { document.getElementById('importFile').click(); },
     'clear-sample': onClearSample,
     'clear-all': onClearAll,
+    // 多学期（工作区）
+    'open-semester-modal': openSemesterModal,
+    'close-semester-modal': closeSemesterModal,
+    'create-semester': onCreateSemester,
+    'switch-semester': function (el) { switchSemester(el.getAttribute('data-id')); },
+    'rename-semester': function (el) { onRenameSemester(el.getAttribute('data-id')); },
+    'delete-semester': function (el) { onDeleteSemester(el.getAttribute('data-id')); },
     'parity-all': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'all', state.settings.totalWeeks); renderDraft(); },
     'parity-odd': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'odd', state.settings.totalWeeks); renderDraft(); },
     'parity-even': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'even', state.settings.totalWeeks); renderDraft(); }
@@ -514,6 +732,7 @@
     // 弹窗遮罩点击关闭
     if (e.target && e.target.id === 'modalOverlay') { closeModal(); return; }
     if (e.target && e.target.id === 'importModal') { if (CI) CI.close(); return; }
+    if (e.target && e.target.id === 'semesterModal') { closeSemesterModal(); return; }
 
     // data-action 按钮（最近的一个）
     var el = e.target.closest ? e.target.closest('[data-action]') : null;
@@ -572,6 +791,7 @@
   function onKeydown(e) {
     if (e.key === 'Escape') {
       closeModal();
+      closeSemesterModal();
       var imp = document.getElementById('importModal');
       if (imp && !imp.hidden && CI) CI.close();
       var panel = document.getElementById('settingsPanel');
@@ -582,27 +802,30 @@
   // ==================== 初始化 ====================
 
   function seed() {
-    // 全新环境：以本周一为学期开始，预置示例课程
+    // 全新环境：以本周一为学期开始，预置示例课程，并生成一个默认学期
     var start = CF.mondayOf(new Date());
     var settings = CF.normalizeSettings({ semesterStart: CF.formatDate(start) });
     var courses = CF.buildSampleCourses().map(function (c) {
       c.id = 'demo_' + CF.uid();
       return CF.normalizeCourse(c);
     });
-    var data = { version: 1, courses: courses, settings: settings };
-    ST.save(data);
-    return data;
+    // normalizeSemester 会按开学日期自动命名（如「2026 秋季学期」）
+    var sem = CF.normalizeSemester({ settings: settings, courses: courses });
+    var ws = { activeId: sem.id, semesters: [sem] };
+    ST.save({ version: 2, activeId: ws.activeId, semesters: ws.semesters });
+    return ws;
   }
 
   function init() {
-    var data = ST.load();
-    if (!data || !Array.isArray(data.courses) || !data.courses.length) {
-      data = seed();
-    }
-    state.courses = data.courses.map(CF.normalizeCourse);
-    state.settings = CF.normalizeSettings(data.settings);
-    state.displayWeek = clampWeek(realWeek());
+    // 兼容 v1 旧数据：normalizeWorkspace 内部完成迁移；只有「完全无数据」才播种示例
+    var ws = CF.normalizeWorkspace(ST.load());
+    if (!ws) ws = seed();
+
+    state.semesters = ws.semesters;
+    loadSemester(ws.activeId, false);
     state.themeMode = readThemeMode();
+
+    persist(); // 立刻回写：把 v1 数据升级为 v2 落盘，避免下次再迁移
 
     applyTheme(state.themeMode);
     bindEvents();
@@ -618,6 +841,8 @@
     // 桌面端环境标识
     var chip = document.getElementById('syncChip');
     if (chip && window.CourseForgeDesktop) chip.textContent = '桌面版 · 本地保存';
+    // 新建学期弹窗的默认值
+    syncSemesterModalDefaults();
     // 今日课程实时刷新（每分钟一次，页面不可见时暂停）
     startClock();
     registerSW();
