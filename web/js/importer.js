@@ -101,6 +101,22 @@
     });
   }
 
+  /**
+   * 把一页的 items 还原成文本。
+   * 优先用版面引擎还原表格（能保住「哪门课在星期几」），
+   * 引擎缺失或判定为非表格时退回朴素的「一行一片段」，至少不会比原来更差。
+   */
+  function layoutPage(items) {
+    var PL = window.CoursePdfLayout;
+    if (PL && typeof PL.layoutToText === 'function') {
+      try {
+        var res = PL.layoutToText(items);
+        if (res && typeof res.text === 'string') return res.text;
+      } catch (e) { /* 落到下面的兜底 */ }
+    }
+    return (items || []).map(function (it) { return it.str; }).join(' ');
+  }
+
   // ==================== 解析入口 ====================
 
   /** 把解析结果统一成待确认结构（补默认周次），feedText / feedEduHtml 共用 */
@@ -289,7 +305,10 @@
         return chain.then(function () {
           return doc.getPage(p).then(function (page) {
             return page.getTextContent().then(function (tc) {
-              var line = tc.items.map(function (it) { return it.str; }).join(' ');
+              // 关键：不能把 items 直接 join(' ') —— 那样会丢掉全部坐标，
+              // 而课表「哪门课属于星期几」的信息只存在于坐标里（详见 pdf-layout.js 的说明）。
+              // 这里先用坐标把页面还原成制表符分列的表格文本，再交给文本解析引擎。
+              var line = layoutPage(tc.items);
               if (line.replace(/\s/g, '').length >= 15) {
                 texts.push(line);
                 setProgress(p / doc.numPages);

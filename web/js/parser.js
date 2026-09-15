@@ -167,13 +167,64 @@
     return false;
   }
 
-  /** 判断 token 是否像教师名：2-4 个汉字（可带 老师/教授/讲师 后缀），且不含地点词 */
+  /**
+   * 判断 token 是否像课程名。
+   * 课名多为 2~12 个汉字，且常带「学/论/语/原理/导论/基础/实验/设计/技术/概论」等词尾；
+   * 这些词尾正是人名不会有的，用它把课名与人名区分开。
+   */
+  function looksLikeCourseName(t) {
+    if (!t) return false;
+    if (looksLikeLocation(t)) return false;
+    if (!/^[\u4e00-\u9fa5A-Za-z0-9+()（）\-·\s]{2,30}$/.test(t)) return false;
+    // 典型课名词尾（人名几乎不会以此结尾）
+    if (/(?:学|论|语|文|原理|导论|基础|实验|设计|技术|概论|方法|分析|结构|系统|数学|物理|化学|编程|经济|管理|史|纲要|政策|教育|体育|英语|训练|实践|专题|研究|应用|制作|赏析|欣赏)$/.test(t)) {
+      return true;
+    }
+    // 含「+」「程序设计」「人工智能」等课程常见构词
+    if (/[+＋]|程序设计|人工智能|数据库|计算机网络|操作系统/.test(t)) return true;
+    // 其余长于 4 个汉字的，基本可以排除人名
+    if (/^[\u4e00-\u9fa5]{5,}$/.test(t)) return true;
+    return false;
+  }
+
+  /**
+   * 判断 token 是否像教师名：2-4 个汉字（可带 老师/教授/讲师 后缀），且不含地点词。
+   * 注意：中文姓名与「学术英语」这类短课名都是 2~4 个汉字，单看字数无法区分 ——
+   * 所以这里排除掉「像课程名」的词，避免把课程名当成教师名（会导致课名被上一行覆盖）。
+   */
   function looksLikeTeacher(t) {
     if (!t) return false;
     if (looksLikeLocation(t)) return false;
+    if (looksLikeCourseName(t)) return false;
     if (/^[\u4e00-\u9fa5]{2,4}$/.test(t)) return true;
     if (/^[\u4e00-\u9fa5]{2,4}(老师|教授|讲师|副教授)$/.test(t)) return true;
     return false;
+  }
+
+  /**
+   * 剥掉课名尾部粘连的括号编号与节次括号。
+   * 「体育(1)(GBK2800002)」→「体育」；「高等数学 B(1)(GBK0101003)」→「高等数学 B」；
+   * 但「大学英语(听说)」这种括号里有汉字的要保留。
+   *
+   * 注意：不能只看单个 token —— splitRest 已按空白切分，「高等数学 B(1)(GBK0101003)」
+   * 传进来的 token 其实只有「B(1)(GBK0101003)」，单看它会把合法的「B」一起剥掉。
+   * 所以这里改用「空白 + 括号编号」的整体正则，在完整课名上剥离。
+   */
+  function stripCourseCode(name) {
+    if (!name) return '';
+    var out = String(name);
+    // 反复剥离「(纯数字)」或「(字母数字编号，至少含一位数字)」，允许括号前有空格
+    for (var guard = 0; guard < 4; guard++) {
+      var next = out.replace(/\s*[（(\[]\s*(?:\d{1,2}|[A-Za-z][A-Za-z0-9\-—_.\/]*\d[A-Za-z0-9\-—_.\/]*|\d[A-Za-z0-9\-—_.\/]*)\s*[)）\]]\s*$/g, '');
+      if (next === out) break;
+      if (!next.trim()) break;  // 剥空了说明整串都是括号，保留原值更安全
+      out = next;
+    }
+    // 收尾：去掉节次被摘除后留下的「孤立左括号」。
+    // 形如「体育(7-8节)」—— 节次片段「(7-8节)」被主流程移走时会连带吃掉右括号，
+    // 只剩一个「(」粘在课名尾部（实测会得到课名「体育(」）。
+    out = out.replace(/[\s（(\[【]+$/, '');
+    return out.trim();
   }
 
   /** 从行剩余文本中拆出 {name, teacher, location}
@@ -181,10 +232,27 @@
    *  因此：课程名 = 第一个非地点 token；教师 = 最后一个非地点 token（需像人名且≠课程名） */
   function splitRest(rest) {
     var tokens = rest.split(/[\s,;、/|·]+/).filter(function (t) {
-      return t && !/^[()\[\]（）\-:：.]+$/.test(t); // 去掉纯符号残片
+      if (!t) return false;
+      if (/^[()\[\]（）\-:：.]+$/.test(t)) return false;       // 纯符号残片
+      return true;
     });
     var nonLoc = tokens.filter(function (t) { return !looksLikeLocation(t); });
-    var name = nonLoc.length ? nonLoc[0] : '';
+    // 课名可能跨多个 token（「高等数学 B(1)(GBK0101003)」= 高等数学 + B(...)）。
+    // 只取 nonLoc[0] 会丢掉「B」，所以把「后续 token 本身就是括号编号形态」的情形拼回来。
+    // 关键：拼接条件必须很窄 —— 只有形如 `X(1)(CODE)` 的续写才拼，
+    // 否则会把「第1-16周」的「第」、地点、教师一并吞进课名（实测会撞坏 4 个既有用例）。
+    var nameParts = [nonLoc.length ? nonLoc[0] : ''];
+    for (var n = 1; n < nonLoc.length; n++) {
+      var tok = nonLoc[n];
+      // 仅当「上一个片段已含括号编号」且「本 token 是字母/数字开头的短代号(带括号编号)」才续拼
+      var prevHasCode = /[（(\[][^（()）\[\]]*[）)\]]\s*$/.test(nameParts[nameParts.length - 1]);
+      var isCodeContinuation = /^[A-Za-z][A-Za-z0-9\-—_.]{0,9}(\s*[（(\[][^（()）\[\]]*[）)\]]\s*)+$/.test(tok);
+      if (!(isCodeContinuation || (prevHasCode && /^[A-Za-z][A-Za-z0-9]{0,9}$/.test(tok)))) break;
+      nameParts.push(tok);
+    }
+    var name = stripCourseCode(nameParts.join(' '));
+    // 若拼接结果为空（极端情况），退回单 token 行为
+    if (!name && nonLoc.length) name = stripCourseCode(nonLoc[0]);
     var teacher = '';
     if (nonLoc.length >= 2) {
       var last = nonLoc[nonLoc.length - 1];
@@ -236,9 +304,13 @@
       if (HEADER_WORDS.test(s) && !sec && !days.length) continue;
 
       // 显式教师标注：教师:张三 / 老师:张三
+      // 捕获必须止于「/ | , ; 」等分隔符，否则「教师:闵伟/选 课备注:…」会把「/选」一起吞进来；
+      // 也止于「地点:」这类下一个标注的开头，避免「教师:胡珉/地点:东区一教101」整段被当成教师。
       var teacherExplicit = '';
-      var tm = /(?:教师|老师|授课)[:：]\s*([^\s,;，]+)/.exec(rest);
-      if (tm) teacherExplicit = tm[1];
+      var tm = /(?:教师|老师|授课)[:：]\s*([^\s,;，/|、]+)/.exec(rest);
+      if (tm) {
+        teacherExplicit = tm[1].replace(/(?:地点|教室|授课地点|上课地点)[:：]?.*$/, '').trim();
+      }
 
       // 显式地点标注：地点:东区一教101 / 教室:东区一教101
       // 网格型课表与列表型课表由调用方明确知道哪一列/哪一行是地点，
@@ -273,7 +345,18 @@
       if (timeSec && timeSec.matched) rest = rest.split(timeSec.matched).join(' ');
       if (/(单周|\(单\))/.test(rest)) rest = rest.replace(/单周|\(单\)/g, ' ');
       if (/(双周|\(双\))/.test(rest)) rest = rest.replace(/双周|\(双\)/g, ' ');
-      if (teacherExplicit) rest = rest.replace(/(?:教师|老师|授课)[:：]\s*[^\s,;，]+/, ' ');
+      // 显式教师标注可能被「/」切成多段（教师:闵伟/选 课备注:…）。
+      // 只删一次会留下「/选」这类残片，而残片一旦排在课名前就会被 splitRest
+      // 当成课名（实测「教师:闵伟/选 体育…」会解析出课名「选」）。
+      // 所以这里做两件事：
+      //   1) 吃掉「教师:xxx」及其后的分隔符与紧跟的选课类型残片（选/必/限/任/公选…）
+      //   2) 确保残片被清干净，避免污染课名
+      if (teacherExplicit) {
+        rest = rest.replace(
+          /(?:教师|老师|授课)[:：]\s*[^\s,;，/|、]*\s*[/|]?\s*(?:选修|必修|限选|任选|公选|选|必)?\s*/g,
+          ' '
+        );
+      }
       rest = rest.replace(/第?\s*节/g, ' ');
 
       var parts = splitRest(rest);
@@ -283,12 +366,22 @@
       // 行内已有独立教师候选（parts.teacher 非空）时，说明 parts.name 是真课程名，严禁互换。
       var name = parts.name;
       var teacher = parts.teacher;
-      if (name && pendingName && !teacher && looksLikeTeacher(name)) {
+      // 「互换」只在确实像详情行时才做：本行唯一可当课名的 token 其实像人名，
+      // 且上一行留下了课名（pendingName）—— 形如「教学楼B105 陈老师」这种详情行。
+      // 判据必须是「像人名且不像课名」（中文短课名如「学术英语」与人名同形，
+      // 只看字数会误换，导致本行课名被上一行顶替；批量解析教务课表时必现串台）。
+      if (name && pendingName && !teacher && looksLikeTeacher(name) && !looksLikeCourseName(name)) {
         teacher = name;
         name = pendingName;
       }
-      if (!name) name = pendingName;
-      if (name) pendingName = name;
+      // pendingName 只服务于「课名独占一行、详情在下一行」的相邻两行排版。
+      // 用完立刻清空：否则下一行若没能解析出课名，会把上一条的课名继承过来。
+      if (!name) {
+        name = pendingName;
+        pendingName = '';
+      } else {
+        pendingName = name;
+      }
       // 显式「教师:xxx」标注优先级最高
       if (teacherExplicit) teacher = teacherExplicit;
 

@@ -5,7 +5,8 @@
   "scripts": {
     "test": "node --test",
     "check:dom": "node tools/check-dom.mjs",
-    "verify": "node --test && node tools/check-dom.mjs && node tools/build-standalone.mjs",
+    "check:mutation": "node tools/mutation-check.mjs",
+    "verify": "node --test && node tools/check-dom.mjs && node tools/mutation-check.mjs && node tools/build-standalone.mjs",
     "build:standalone": "node tools/build-standalone.mjs",
     "start:web": "node tools/serve.mjs"
   },

@@ -161,3 +161,81 @@ test('全角字符归一化', () => {
   assert.equal(c.weeks.length, 16);
   assert.equal(c.location, 'D楼202');
 });
+
+// ==================== 回归：真实教务课表（上海大学 PDF 导出格式）====================
+// 这几个断言守护的是被真实文件暴露出来的 bug，删掉对应代码必须变红。
+
+test('回归：括号课程编号不得粘进课名（体育(1)(GBK2800002) → 体育）', () => {
+  const r = CP.parseScheduleText('星期一 体育(1)(GBK2800002) (7-8节)1-16周/教师:闵伟/选 课备注:男生羽毛球(基础 )/学分:1.0', OPTS);
+  assert.equal(r.items.length, 1);
+  assert.equal(r.items[0].name, '体育', '课名必须剥掉 (1) 与 (GBK2800002)');
+  assert.equal(r.items[0].teacher, '闵伟');
+  assert.equal(r.items[0].day, 1);
+  assert.equal(r.items[0].startSection, 7);
+  assert.equal(r.items[0].endSection, 8);
+});
+
+test('回归：括号内是汉字时属于课名本体，必须保留（大学英语(听说)）', () => {
+  const r = CP.parseScheduleText('星期三 大学英语(听说) (3-4节)1-16周/教师:顾海悦', OPTS);
+  assert.equal(r.items[0].name, '大学英语(听说)', '汉字括号是课名的一部分，不能被剥掉');
+});
+
+test('回归：显式「教师:」不得吞掉后续标注（教师:闵伟/选 → 闵伟）', () => {
+  const r = CP.parseScheduleText('星期一 体育(1)(GBK2800002) (7-8节)1-16周/教师:闵伟/选 课备注:男生羽毛球(基础 )/学分:1.0', OPTS);
+  assert.equal(r.items[0].teacher, '闵伟', '「/选」残片不得进入教师字段');
+  assert.ok(!/选|备注|学分/.test(r.items[0].teacher));
+});
+
+test('回归：「教师:X/地点:Y」中地点不得被吞进教师，且应解析出地点', () => {
+  const r = CP.parseScheduleText('星期一 C++程序设计(JBK2321001) (1-2节)1-16周/教师:胡珉/地点:东区一教101', OPTS);
+  assert.equal(r.items[0].name, 'C++程序设计');
+  assert.equal(r.items[0].teacher, '胡珉', '教师字段不得包含「/地点:…」');
+  assert.equal(r.items[0].location, '东区一教101');
+});
+
+test('回归：pendingName 用完即清，同一课名不得被后续无课名行反复继承', () => {
+  // 第 1 行给出课名（成为 pendingName），第 2 行靠它补全；
+  // 第 3 行同样没有课名 —— 若 pendingName 没在用完时清空，第 3 行会再次继承
+  // 「C++程序设计」，凭空多出一条记录（真实教务课表里表现为课名串台）。
+  const text = ['C++程序设计', '周二 3-4节', '周四 5-6节'].join('\n');
+  const r = CP.parseScheduleText(text, OPTS);
+  const inherited = r.items.filter((i) => i.name === 'C++程序设计');
+  assert.equal(inherited.length, 1, 'pendingName 只能被消费一次，不得被第 3 行重复继承');
+  assert.equal(inherited[0].day, 2, '应归属第 2 行声明的星期二');
+});
+
+test('回归：无课名且无星期的行不得凭空造课', () => {
+  const text = ['C++程序设计 周一 1-2节 1-16周 东区一教101 胡珉', '——（分割线，无有效信息）——'].join('\n');
+  const r = CP.parseScheduleText(text, OPTS);
+  assert.equal(r.items.length, 1);
+  assert.equal(r.items[0].name, 'C++程序设计');
+  assert.ok(!r.items.some(i => i.name === '' || i.name.startsWith('——')));
+});
+
+test('回归：短课名不被误判为教师名（学术英语 4 字）', () => {
+  const r = CP.parseScheduleText('星期一 学术英语 (1)(GBK2300001) (3-4节)1-16周/教师:顾海悦 /选课备注:/学分:10.0', OPTS);
+  assert.equal(r.items[0].name, '学术英语', '「学术英语」是课名不是人名，不得被互换逻辑顶替');
+  assert.equal(r.items[0].teacher, '顾海悦');
+});
+
+test('回归：全角括号编号同样被剥离（高等数学 B(1)(GBK0101003) → 高等数学 B）', () => {
+  const r = CP.parseScheduleText('星期二 高等数学 B(1)(GBK0101003) (7-8节)1-16周/教师:张琴/选 课备注:/学分:5.0', OPTS);
+  assert.equal(r.items[0].name, '高等数学 B');
+  assert.equal(r.items[0].teacher, '张琴');
+});
+
+test('回归：教师标注后的「/选」残片不得被当成课名（教师:闵伟/选 体育 → 体育）', () => {
+  // 「选」是选课类型标记，被「/」切成独立片段后排在课名前，
+  // 早期实现会把它当成课名（实测解析出课名「选」）。
+  const r = CP.parseScheduleText('星期一 教师:闵伟/选 体育(7-8节)1-16周', OPTS);
+  assert.equal(r.items[0].name, '体育', '「选」是选课类型残片，不得成为课名');
+  assert.equal(r.items[0].teacher, '闵伟');
+});
+
+test('回归：节次括号被摘除后不得残留孤立左括号（体育(7-8节) → 体育）', () => {
+  // 节次片段「(7-8节)」被移走时会连带吃掉右括号，只剩「(」粘在课名尾部。
+  const r = CP.parseScheduleText('星期一 体育(7-8节)1-16周', OPTS);
+  assert.equal(r.items[0].name, '体育', '课名尾部不得残留「(」');
+  assert.equal(r.items[0].startSection, 7);
+  assert.equal(r.items[0].endSection, 8);
+});

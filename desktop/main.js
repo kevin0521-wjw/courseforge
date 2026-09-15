@@ -12,6 +12,16 @@ const path = require('path');
 let mainWindow = null;
 let eduWindow = null;
 
+/**
+ * 网页目录的位置。
+ * 开发态：desktop/ 的上一级里的 web/。
+ * 打包后：web/ 被 electron-builder 的 extraResources 放到 <安装目录>/resources/web，
+ *        靠 __dirname 猜路径在不同打包参数下会飘，所以这里按 app.isPackaged 显式区分。
+ */
+const WEB_DIR = app.isPackaged
+  ? path.join(process.resourcesPath, 'web')
+  : path.join(__dirname, '..', 'web');
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -29,7 +39,7 @@ function createWindow() {
     }
   });
 
-  mainWindow.loadFile(path.join(__dirname, '..', 'web', 'index.html'));
+  mainWindow.loadFile(path.join(WEB_DIR, 'index.html'));
 
   // 外部链接用系统浏览器打开，不在应用内跳转
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

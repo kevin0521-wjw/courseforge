@@ -8,7 +8,7 @@
     "dist": "electron-builder --win"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^44.3.0"
   },
   "build": {
     "appId": "com.kevin0521.courseforge",
@@ -16,6 +16,17 @@
     "directories": {
       "output": "release"
     },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web",
+        "to": "web"
+      }
+    ],
     "win": {
       "target": ["nsis"]
     },
