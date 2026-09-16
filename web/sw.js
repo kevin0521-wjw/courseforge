@@ -1,11 +1,11 @@
 /**
  * CourseForge Service Worker
- * 策略：应用外壳「缓存优先 + 后台更新」，让课表离线可看（课表本身就是离线数据）
+ * 策略：**网络优先 + 缓存兜底** —— 已发布的修复下次打开立即生效，离线仍可看课表。
  * 注意：跨域请求（OCR 引擎 / PDF 引擎 CDN）不拦截，交给网络
  */
 // 缓存名带版本号：内容一改就要升版本，否则老用户会一直吃旧缓存。
 // 升版本后 activate 会清掉旧缓存，实现「换版本即失效」。
-const CACHE = 'courseforge-v5';
+const CACHE = 'courseforge-v6';
 // 预缓存清单必须与 index.html 里的 <script src> 完全对齐 ——
 // 漏掉任何一个，首次离线访问时该脚本会 fetch 失败并 fallback 到 index.html，
 // 把 HTML 当 JS 返回，脚本解析报错、应用整个崩掉。
@@ -42,8 +42,28 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim())
+      .then((keys) => {
+        // 存在「别的版本」的缓存 → 这是一次版本升级，而非首次安装
+        const upgrading = keys.some((k) => k !== CACHE);
+        return Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
+          .then(() => self.clients.claim())
+          .then(() => {
+            if (!upgrading) return null;
+            // 主动让已经打开的页面重新加载。
+            //
+            // 为什么必须由 SW 来做这一步：停在旧页面上的 app.js 是【旧代码】，
+            // 它根本没有 controllerchange 监听（那是新版本才加的），
+            // 所以页面不会自己刷新，用户会继续看到旧界面 ——
+            // 表现就是「修复明明已经发布，用户却还说不行」，
+            // 这个问题在定位真根因时误导了两轮，代价很大。
+            //
+            // 只在版本升级时触发（首次安装不刷），因此不会造成刷新循环：
+            // 重新加载后 SW 已是最新，不会再触发 activate。
+            return self.clients.matchAll({ type: 'window' }).then((list) =>
+              Promise.all(list.map((c) => c.navigate(c.url).catch(() => null)))
+            );
+          });
+      })
   );
 });
 
@@ -55,24 +75,39 @@ self.addEventListener('fetch', (event) => {
   try { url = new URL(req.url); } catch (e) { return; }
   if (url.origin !== self.location.origin) return; // 外部引擎走网络，不进缓存
 
+  const isNavigation = req.mode === 'navigate';
+
+  const save = (res) => {
+    if (res && res.status === 200 && res.type === 'basic') {
+      const copy = res.clone();
+      caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+    }
+    return res;
+  };
+
+  // 网络优先。
+  // 这里原来是 cache-first（命中就立刻返回旧副本，只顺带在后台更新），
+  // 代价是「已发布的修复要等用户访问两次才生效」—— 排查
+  // 「我这边明明改好了，用户打开还报同样的错」时，这个延迟极具误导性。
+  // 改成网络优先后：在线永远拿最新，离线才退回缓存。
+  // 课表数据本身存在 localStorage，离线可用性不受影响。
   event.respondWith(
-    caches.match(req, { ignoreSearch: true }).then((hit) => {
-      if (hit) {
-        // 后台静默更新，下次打开即最新
-        fetch(req).then((res) => {
-          if (res && res.status === 200) {
-            caches.open(CACHE).then((c) => c.put(req, res.clone())).catch(() => {});
+    fetch(req)
+      .then(save)
+      .catch(() =>
+        caches.match(req, { ignoreSearch: true }).then((hit) => {
+          if (hit) return hit;
+          // 只有导航请求才允许退回 index.html。
+          // 其他资源【绝不能】用 HTML 兜底：曾出现 cmaps/*.bcmap 取不到时
+          // 被 index.html 顶上，pdf.js 把 HTML 当成 CMap 表来解析 →
+          // 中文一个字符都解不出，界面只报「PDF 中未提取到文字」，
+          // 查了几轮才定位到 SW 这一层。
+          if (isNavigation) {
+            return caches.match('./index.html', { ignoreSearch: true })
+              .then((page) => page || Response.error());
           }
-        }).catch(() => {});
-        return hit;
-      }
-      return fetch(req).then((res) => {
-        if (res && res.status === 200) {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
-        }
-        return res;
-      }).catch(() => caches.match('./index.html', { ignoreSearch: true }));
-    })
+          return Response.error();
+        })
+      )
   );
 });

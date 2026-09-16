@@ -666,6 +666,20 @@
     // file:// 或桌面端本地文件环境下 Service Worker 不可用，静默跳过
     if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
     try {
+      // 新版本 SW 接管后自动刷新一次，让「刚发布的修复」当场生效。
+      //
+      // 背景：sw.js 早期用 cache-first，已部署的新代码要等用户访问两次才生效。
+      // 表现就是「我这边明明改好并发布了，用户打开还是报同样的错」——
+      // 上两轮排查就被这个现象带偏过（误以为是修复本身没起作用）。
+      // 首次安装时 controller 从 null 变有值也会触发 controllerchange，
+      // 那种情况不刷新（hadController 为 false），免得白白多刷一次页面。
+      var hadController = !!navigator.serviceWorker.controller;
+      var reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', function () {
+        if (!hadController || reloaded) return;
+        reloaded = true;
+        location.reload();
+      });
       navigator.serviceWorker.register('sw.js').catch(function () { /* 离线能力非核心，失败不影响使用 */ });
     } catch (e) { /* 忽略 */ }
   }

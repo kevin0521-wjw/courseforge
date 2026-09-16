@@ -30,6 +30,8 @@ const NODE = process.argv[2] || process.execPath;
 const FILES = {
   parser: path.join(ROOT, 'web/js/parser.js'),
   layout: path.join(ROOT, 'web/js/pdf-layout.js'),
+  importer: path.join(ROOT, 'web/js/importer.js'),
+  sw: path.join(ROOT, 'web/sw.js'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
 const FIXTURE = 'tests/fixtures/cjk-timetable-rotated.pdf';
@@ -228,6 +230,82 @@ const ONLY = process.env.MUT_ONLY !== undefined ? Number(process.env.MUT_ONLY) :
     file: 'fixtureGen',
     apply: (s) => (s.includes(anchor) ? s.replace(anchor, 'parts = []  # MUTANT') : s),
     prepare: () => rebuildFixture()
+  });
+}
+
+// ==================== CMap 源选择（「PDF 中未提取到文字」的真根因所在）====================
+
+// 14) 只留一个 CMap 源 —— 等于没有兜底。
+//     在境内这是致命的：唯一那个源取不到时，整页文字凭空消失，
+//     而 pdf.js 只 warn 不抛错，界面只剩一句「PDF 中未提取到文字」。
+{
+  mutations.push({
+    name: 'CMap 只留一个源（首选取不到就彻底没辙）',
+    file: 'importer',
+    apply: (s) => s.replace(
+      /var CMAP_SOURCES = \[[\s\S]*?\];/,
+      "var CMAP_SOURCES = ['cmaps/']; // MUTANT"
+    )
+  });
+}
+
+// 15) 把本地源从首位挪走 —— 违反了「同源随包目录最可靠」这个排序原则
+{
+  mutations.push({
+    name: 'CMap 源顺序颠倒（把最可靠的本地目录挪到后面）',
+    file: 'importer',
+    apply: (s) => s.replace(
+      /var CMAP_SOURCES = \[[\s\S]*?\];/,
+      "var CMAP_SOURCES = ['https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VERSION + '/cmaps/', " +
+      "'cmaps/']; // MUTANT"
+    )
+  });
+}
+
+// 16) 解不出文字时不换源、直接放弃 —— 复刻旧版「一次失败就完事」的行为
+{
+  const anchor = 'return doc.destroy().then(function () { return tryAt(i + 1); });';
+  mutations.push({
+    name: '解不出文字时不换源（退回单源行为）',
+    file: 'importer',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, 'return doc.destroy().then(function () { return null; }); // MUTANT')
+      : s)
+  });
+}
+
+// 17) 实试时不复制 ArrayBuffer —— pdf.js 会把它 detach，第二次就是空 buffer
+{
+  mutations.push({
+    name: '实试时不复制 ArrayBuffer（第二个源拿到空数据）',
+    file: 'importer',
+    apply: (s) => s.replace(/buf\.slice\(0\)/g, 'buf /* MUTANT */')
+  });
+}
+
+// 18) SW 退回 cache-first —— 已发布的修复要用户访问两次才生效，
+//     制造出「我这边改好了、用户还说不行」的假象（上两轮就是这么被带偏的）
+{
+  mutations.push({
+    name: 'SW 退回 cache-first（修复延迟一两次访问才生效）',
+    file: 'sw',
+    apply: (s) => {
+      const seg = between(s, 'event.respondWith(', '  );\n});');
+      if (!seg) return s;
+      const replaced = [
+        'event.respondWith(',
+        '    caches.match(req, { ignoreSearch: true }).then((hit) => {',
+        '      if (hit) {',
+        '        fetch(req).then(save).catch(() => {}); // MUTANT',
+        '        return hit;',
+        '      }',
+        '      return fetch(req).then(save).catch(() => Response.error());',
+        '    })',
+        '  );',
+        '});'
+      ].join('\n');
+      return s.replace(seg, replaced);
+    }
   });
 }
 

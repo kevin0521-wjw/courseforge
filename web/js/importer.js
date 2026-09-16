@@ -10,55 +10,58 @@
   var CF = window.CourseForge;
   var CP = window.CourseParser;
 
-  // CDN 源（主源失败自动换备源；首次使用需联网，之后浏览器有缓存）
-  var TESSERACT_URLS = [
-    'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
-    'https://unpkg.com/tesseract.js@5.1.1/dist/tesseract.min.js'
-  ];
-  var PDFJS_URLS = [
-    'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',
-    'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js'
-  ];
-  var PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+  var PDFJS_VERSION = '3.11.174';
+  var TESSERACT_VERSION = '5.1.1';
 
   /**
-   * CMap 目录 —— 中文 PDF 能不能解出文字，全看这一项。
+   * 引擎脚本源 —— 顺序即优先级，**境内镜像排第一**。
+   *
+   * 第一版把 jsdelivr 放在首位，那在大陆是错的：jsdelivr 经常整个域名不可达，
+   * 备用源 unpkg 同样不稳，两个都挂就只剩「脚本加载失败（检查网络）」。
+   * 淘宝 npmmirror 是境内节点，实测 pdf.js / cmaps / tesseract 都能稳定取到，
+   * 所以由它打头，境外源退为兜底。
+   *
+   * 注意两个路径模板不同（npmmirror 用 /<pkg>/<ver>/files/<path>），
+   * 不能简单替换域名，必须按各站格式拼。
+   */
+  function cdnUrls(pkg, version, path) {
+    return [
+      'https://registry.npmmirror.com/' + pkg + '/' + version + '/files/' + path,
+      'https://cdn.jsdelivr.net/npm/' + pkg + '@' + version + '/' + path,
+      'https://unpkg.com/' + pkg + '@' + version + '/' + path
+    ];
+  }
+
+  var TESSERACT_URLS = cdnUrls('tesseract.js', TESSERACT_VERSION, 'dist/tesseract.min.js');
+  var PDFJS_URLS = cdnUrls('pdfjs-dist', PDFJS_VERSION, 'build/pdf.min.js');
+
+  /**
+   * CMap 源候选 —— 中文 PDF 能不能解出文字，全看这一项。
    *
    * 国内教务系统导出的 PDF 普遍用 Type0 + CMap 编码的非嵌入字体
    * （如 STSong-Light + UniGB-UCS2-H）。pdf.js 必须加载对应的 .bcmap
-   * 才能把字符码映射成文字；缺了它 getTextContent() 会返回 **0 个 item**
-   * ——不是乱码，是彻底空白，最终表现为「PDF 中未提取到文字」。
-   * pdf.js 内部会抛 "The CMap baseUrl parameter must be specified"。
+   * 才能把字符码映射成文字；拿不到就一个字符也读不出来。
    *
-   * 优先用随包发布的本地 cmaps/ 目录：无外部依赖、离线可用、
-   * Electron 断网也能导入中文课表。若本地目录不可用（例如单文件版
-   * 只有一个 html、或部署时漏传了 cmaps/），自动回退到同版本 CDN。
-   * 探测结果缓存，一次会话只探一次。
+   * ⚠️ 这里踩过一个代价很大的坑，别再改回去：
+   *    早先的实现是「先探测本地 cmaps/ 是否可用，2 秒没响应就回退到 CDN」。
+   *    那个设计在大陆是【主动帮倒忙】——
+   *      · 本地 cmaps/ 随包发布、同源、几乎永远可用，只是可能慢；
+   *      · 而回退目标 jsdelivr 经常整个域名不可达。
+   *    于是网络稍差时，它把本来能用的本地源换成取不到的远端源。
+   *    更糟的是 pdf.js 在 CMap 取不到时【只 warn 不抛错】，
+   *    getTextContent() 静静地返回空数组，界面上只剩一句
+   *    「PDF 中未提取到文字」，完全看不出真实原因（我为此误诊了两轮）。
+   *
+   * 现在改成【按可靠性排序 + 实试】：拿第一页当探针，谁先解出文字就用谁，
+   * 不做任何基于超时的猜测。顺序：本地随包目录 → 境内镜像 → 境外兜底。
    */
-  var CMAP_BASE = 'cmaps/';
-  var CMAP_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/';
-  // 用 UniGB-UCS2-H 当探针：任何 pdfjs-dist 发行版都带它，
-  // 而且它正是中文 PDF 最需要的那一个，探到即说明本地目录可用。
-  var CMAP_PROBE = 'UniGB-UCS2-H.bcmap';
-
-  var cmapBasePromise = null;
-  function resolveCMapBase() {
-    if (cmapBasePromise) return cmapBasePromise;
-    cmapBasePromise = new Promise(function (resolve) {
-      var done = false;
-      var finish = function (base) { if (!done) { done = true; resolve(base); } };
-      try {
-        fetch(CMAP_BASE + CMAP_PROBE)
-          .then(function (res) { finish(res && res.ok ? CMAP_BASE : CMAP_CDN); })
-          .catch(function () { finish(CMAP_CDN); });
-        // 探测请求不该拖慢导入：2 秒内没结果就直接用 CDN
-        setTimeout(function () { finish(CMAP_CDN); }, 2000);
-      } catch (e) {
-        finish(CMAP_CDN);
-      }
-    });
-    return cmapBasePromise;
-  }
+  var CMAP_SOURCES = [
+    'cmaps/',
+    'https://registry.npmmirror.com/pdfjs-dist/' + PDFJS_VERSION + '/files/cmaps/',
+    'https://cdn.jsdelivr.net/npm/pdfjs-dist@' + PDFJS_VERSION + '/cmaps/'
+  ];
+  // 会话内记住「这次可用的源」，后续导入直接排到最前面，不重复试错。
+  var cmapSourceCache = null;
 
   var bridge = null;          // { getSettings, apply, toast }
   var parsedItems = [];       // 解析结果（可编辑）
@@ -68,14 +71,25 @@
 
   function $(id) { return document.getElementById(id); }
 
+  /**
+   * 依次尝试各镜像加载脚本，resolve 为【实际成功的那个 URL】。
+   * 返回 URL 而不是 void：worker 之类的同伴资源必须跟主脚本同源，
+   * 否则主脚本从境内镜像下来了、worker 还写死境外域名，引擎仍然是半残。
+   */
   function loadScript(urls) {
     return new Promise(function (resolve, reject) {
       var i = 0;
+      var tried = 0;
       function tryNext() {
-        if (i >= urls.length) { reject(new Error('脚本加载失败（检查网络）')); return; }
+        if (i >= urls.length) {
+          reject(new Error('脚本加载失败（已试 ' + tried + ' 个源，请检查网络）'));
+          return;
+        }
+        var url = urls[i++];
+        tried++;
         var el = document.createElement('script');
-        el.src = urls[i++];
-        el.onload = function () { resolve(); };
+        el.src = url;
+        el.onload = function () { resolve(url); };
         el.onerror = function () { el.remove(); tryNext(); };
         document.head.appendChild(el);
       }
@@ -130,12 +144,15 @@
     }).then(function (w) { ocrWorker = w; return w; });
   }
 
-  /** 确保 pdf.js 已加载 */
+  /** 确保 pdf.js 已加载，并把 worker 指向与主脚本同一个镜像 */
   function ensurePdfJs() {
     if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
-    return loadScript(PDFJS_URLS).then(function () {
+    return loadScript(PDFJS_URLS).then(function (okUrl) {
       if (!window.pdfjsLib) throw new Error('PDF 引擎加载失败');
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
+      // worker 必须跟主脚本同源：pdf.min.js 与 pdf.worker.min.js 在各镜像上都同目录，
+      // 换掉文件名即可。写死单一域名的话，主脚本下来了、worker 下不来，引擎照样废。
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+        okUrl.replace(/pdf\.min\.js$/, 'pdf.worker.min.js');
       return window.pdfjsLib;
     });
   }
@@ -327,67 +344,174 @@
     });
   }
 
-  /** 解析 PDF：优先提取文字层，文字太少（扫描版）的页转图片走 OCR */
-  function runPdf(file) {
-    setStatus('正在加载 PDF 引擎…');
-    setProgress(0.05);
-    var cmapBase = CMAP_CDN;
-    Promise.all([ensurePdfJs(), resolveCMapBase()]).then(function (r) {
-      cmapBase = r[1];
-      return file.arrayBuffer();
-    }).then(function (buf) {
-      setStatus('正在解析 PDF…');
-      // cMapUrl + cMapPacked 必须传：中文课表用的 Type0/CMap 字体
-      // 全靠它才能解码，缺了会一个字符都读不出来（详见文件顶部说明）。
+  // ==================== PDF 提取 ====================
+
+  /** 一页的文字量（去掉空白再数，空片段不计） */
+  function countChars(items) {
+    var n = 0;
+    for (var i = 0; i < (items || []).length; i++) {
+      n += String(items[i].str || '').replace(/\s/g, '').length;
+    }
+    return n;
+  }
+
+  /** 把一页渲染成图片并 OCR（文字层不可用时的兜底） */
+  function ocrPage(page) {
+    var viewport = page.getViewport({ scale: 2 });
+    var canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    return page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise
+      .then(function () { return ensureOcr(); })
+      .then(function (worker) { return worker.recognize(canvas); })
+      .then(function (res) { return (res && res.data && res.data.text) || ''; });
+  }
+
+  /**
+   * 找第一个「真的能解出文字」的页。
+   * 看前 3 页就够：首几页都没文字时，要么整篇是扫描件，要么字体编码特殊，
+   * 两种情况下面的逻辑都会走 OCR 兜底。
+   */
+  function probeTextPage(doc) {
+    var limit = Math.min(doc.numPages, 3);
+    function at(p) {
+      if (p > limit) return Promise.resolve(null);
+      return doc.getPage(p).then(function (page) {
+        return page.getTextContent().then(function (tc) {
+          if (countChars(tc.items) > 0) return { page: p, text: layoutPage(tc.items) };
+          return at(p + 1);
+        });
+      });
+    }
+    return at(1);
+  }
+
+  /**
+   * 依次实试各个 CMap 源，返回第一个能解出文字的（连同已打开的文档）。
+   *
+   * 判据必须是「第一页文字字符数 > 0」，不能靠「有没有报错」——
+   * 因为 pdf.js 在 CMap 取不到时【不抛错】，只静默返回空 items。
+   * 这也是上两轮误诊的根源：表面症状是「PDF 中未提取到文字」，
+   * 看起来像解析器的问题，实际是 CMap 源没取到。
+   *
+   * 全部源都解不出则返回 null，交给整篇 OCR 兜底。
+   */
+  function openWithWorkingCMap(buf) {
+    var order = cmapSourceCache
+      ? [cmapSourceCache].concat(CMAP_SOURCES.filter(function (s) { return s !== cmapSourceCache; }))
+      : CMAP_SOURCES.slice();
+
+    function tryAt(i) {
+      if (i >= order.length) return Promise.resolve(null);
+      var src = order[i];
       return window.pdfjsLib.getDocument({
-        data: buf,
-        cMapUrl: cmapBase,
+        // ⚠️ 必须传 buf 的副本：pdf.js 会把 data 转移（detach）给 worker，
+        // 同一个 ArrayBuffer 复用第二次只会得到空 buffer。
+        data: buf.slice(0),
+        cMapUrl: src,
         cMapPacked: true
-      }).promise;
-    }).then(function (doc) {
-      var texts = [];
-      var pages = [];
-      for (var p = 1; p <= doc.numPages; p++) pages.push(p);
-      return pages.reduce(function (chain, p) {
-        return chain.then(function () {
+      }).promise.then(function (doc) {
+        return probeTextPage(doc).then(function (hit) {
+          if (hit) {
+            cmapSourceCache = src; // 记住可用源，后续导入直接优先它
+            return { doc: doc, source: src, probe: hit };
+          }
+          return doc.destroy().then(function () { return tryAt(i + 1); });
+        });
+      })['catch'](function () {
+        // 该源连文档都打不开（例如本地目录不存在、镜像不可达）→ 试下一个
+        return tryAt(i + 1);
+      });
+    }
+    return tryAt(0);
+  }
+
+  /** 逐页还原：有文字层就用文字层，太薄的页转 OCR（应对混排的扫描件） */
+  function collectPages(doc, probe) {
+    var total = doc.numPages;
+    var texts = [];
+    var chain = Promise.resolve();
+    for (var p = 1; p <= total; p++) {
+      chain = chain.then((function (p) {
+        return function () {
+          // 探针页已经解过了，直接复用，不重复解析
+          if (probe && probe.page === p) {
+            texts.push(probe.text);
+            setProgress(p / total);
+            return null;
+          }
           return doc.getPage(p).then(function (page) {
             return page.getTextContent().then(function (tc) {
-              // 关键：不能把 items 直接 join(' ') —— 那样会丢掉全部坐标，
-              // 而课表「哪门课属于星期几」的信息只存在于坐标里（详见 pdf-layout.js 的说明）。
-              // 这里先用坐标把页面还原成制表符分列的表格文本，再交给文本解析引擎。
               var line = layoutPage(tc.items);
               if (line.replace(/\s/g, '').length >= 15) {
                 texts.push(line);
-                setProgress(p / doc.numPages);
+                setProgress(p / total);
                 return null;
               }
-              // 文字层太薄 → 渲染成图片走 OCR
-              setStatus('第 ' + p + ' 页是扫描图，正在 OCR…');
-              var scale = 2;
-              var viewport = page.getViewport({ scale: scale });
-              var canvas = document.createElement('canvas');
-              canvas.width = viewport.width;
-              canvas.height = viewport.height;
-              return page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise
-                .then(function () { return ensureOcr(); })
-                .then(function (worker) { return worker.recognize(canvas); })
-                .then(function (res) {
-                  texts.push(res.data.text || '');
-                  setProgress(p / doc.numPages);
-                });
+              setStatus('第 ' + p + ' 页没有文字层，正在按图片识别…');
+              return ocrPage(page).then(function (t) {
+                texts.push(t || '');
+                setProgress(p / total);
+              });
             });
           });
+        };
+      })(p));
+    }
+    return chain.then(function () { return texts.join('\n'); });
+  }
+
+  /**
+   * 所有 CMap 源都解不出文字时的兜底：整篇当图片识别。
+   * 不传 cMapUrl —— 渲染走字形，不需要文字解码表。
+   */
+  function ocrWholeDocument(buf) {
+    return window.pdfjsLib.getDocument({ data: buf.slice(0) }).promise.then(function (doc) {
+      var texts = [];
+      var chain = Promise.resolve();
+      for (var p = 1; p <= doc.numPages; p++) {
+        chain = chain.then((function (p) {
+          return function () {
+            return doc.getPage(p).then(ocrPage).then(function (t) {
+              texts.push(t || '');
+              setProgress(p / doc.numPages);
+            });
+          };
+        })(p));
+      }
+      return chain
+        .then(function () { return doc.destroy(); })
+        .then(function () { return texts.join('\n'); });
+    });
+  }
+
+  /** 解析 PDF：优先提取文字层，文字层不可用才转图片走 OCR */
+  function runPdf(file) {
+    setStatus('正在加载 PDF 引擎…');
+    setProgress(0.05);
+    ensurePdfJs().then(function () {
+      return file.arrayBuffer();
+    }).then(function (buf) {
+      setStatus('正在解析 PDF…');
+      return openWithWorkingCMap(buf).then(function (opened) {
+        if (!opened) {
+          setStatus('PDF 没有可用的文字层，正在按图片识别（较慢）…');
+          return ocrWholeDocument(buf);
+        }
+        setProgress(0.1);
+        return collectPages(opened.doc, opened.probe).then(function (text) {
+          return opened.doc.destroy().then(function () { return text; });
         });
-      }, Promise.resolve()).then(function () { return texts.join('\n'); });
+      });
     }).then(function (text) {
       setProgress(null);
       if (!text.trim()) {
-        setStatus('PDF 中未提取到文字');
+        setStatus('这个 PDF 读不出文字：既没有文字层，图片识别也没读到内容。若是扫描件，建议直接拍清晰照片用「照片导入」');
         return;
       }
       feedText(text);
       setStatus('');
-    }).catch(function (err) {
+    })['catch'](function (err) {
       setProgress(null);
       setStatus('PDF 解析失败：' + (err && err.message ? err.message : '未知错误'));
     });

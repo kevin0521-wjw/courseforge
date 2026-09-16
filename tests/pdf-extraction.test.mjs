@@ -105,11 +105,15 @@ test('交付：web/cmaps/ 存在且包含中文 PDF 必需的 CMap 文件', () =
   for (const need of ['UniGB-UCS2-H.bcmap', 'UniGB-UTF16-H.bcmap', 'Adobe-GB1-UCS2.bcmap']) {
     assert.ok(files.includes(need), `缺少关键 CMap：${need}`);
   }
-  // 探针文件必须在（importer.js 用它判断本地目录可用性）
+  // 真实课表 PDF 用的就是 STSong-Light + UniGB-UCS2-H 这一对，
+  // 单独再断言一次：这份文件在，中文课表才有可能解出来。
   assert.ok(
     files.includes('UniGB-UCS2-H.bcmap'),
-    'importer.js 的 CMAP_PROBE 依赖 UniGB-UCS2-H.bcmap'
+    '真实课表 PDF（STSong-Light + UniGB-UCS2-H）依赖此文件'
   );
+  // 体积粗检：168 个 .bcmap 约 1.5MB，只有几个 KB 说明复制被截断了
+  const totalBytes = files.reduce((n, f) => n + readFileSync(join(CMAPS, f)).length, 0);
+  assert.ok(totalBytes > 500 * 1024, `cmaps 总体积异常偏小（${totalBytes} 字节），疑似复制不完整`);
 });
 
 // ==================== 源码守护：生产代码必须真的传这两个选项 ====================
@@ -130,7 +134,48 @@ test('源码：runPdf 必须向 getDocument 传 cMapUrl 与 cMapPacked', () => {
     'getDocument 必须传 cMapPacked: true（.bcmap 是压缩格式）'
   );
 
-  // 探针与回退逻辑必须存在，否则「部署时漏传 cmaps/」会静默失效
-  assert.ok(/resolveCMapBase/.test(src), '应保留 CMap 目录探测/回退逻辑');
-  assert.ok(/CMAP_CDN/.test(src), '应保留 CDN 回退地址');
+  // ==================== 守护「CMap 源选择」—— 这里踩过一个代价很大的坑 ====================
+  //
+  // 历史教训（务必保留）：
+  //   早期实现是「探测本地 cmaps/ 是否可用，2 秒没响应就回退到 CDN」。
+  //   在境内这是【主动帮倒忙】：本地 cmaps/ 同源随包发布、几乎永远可用，只是可能慢；
+  //   而回退目标 jsdelivr 经常整个域名不可达。于是网络稍差时，它把唯一可用的源
+  //   换成取不到的源。更坑的是 pdf.js 在 CMap 取不到时【只 warn 不抛错】，
+  //   getTextContent() 静静返回空 items —— 界面只剩一句「PDF 中未提取到文字」，
+  //   看起来像解析器坏了，实际是源没取到。为此连续误诊了两轮。
+  //
+  //   正确做法是「按可靠性排序 + 实试」：拿第一页当探针，谁先解出文字就用谁。
+  //   注意 pdf.js 会 detach 传进去的 ArrayBuffer，所以每次实试都要传副本。
+  assert.ok(
+    /CMAP_SOURCES\s*=\s*\[/.test(src),
+    'CMap 源必须以候选列表成序列出（本地 → 境内镜像 → 境外兜底）'
+  );
+  assert.ok(
+    /cMapUrl:\s*src/.test(src),
+    '必须以「实试各候选源」的方式选源，而不是先猜一个源直接用'
+  );
+  assert.ok(
+    /data:\s*buf\.slice\(0\)/.test(src),
+    '每次实试必须传 ArrayBuffer 副本 —— pdf.js 会把它 detach，复用第二次就是空 buffer'
+  );
+  assert.ok(
+    !/setTimeout\(\s*function\s*\(\)\s*\{\s*finish\(/.test(src),
+    '禁止「探测超时就回退 CDN」：本地只是慢时会被误判成不可用，' +
+    '把请求推向境内常常不可达的境外源 —— 这正是「PDF 中未提取到文字」的成因'
+  );
+  assert.ok(
+    !/CMAP_PROBE/.test(src),
+    '不应再保留「单文件探测」式的源选择（已改为按序实试）'
+  );
+});
+
+test('根因档案：CMap 取不到时 pdf.js 不抛错、只静默返回 0 item', { skip }, async () => {
+  // 这条测试是把「为什么不能用 try/catch 判断 CMap 源是否可用」写进回归集。
+  // 它同时解释了「配置错的源」为什么不会报错、只会让整页文字凭空消失。
+  const dead = await extract(FIXTURE, { cMapUrl: 'http://127.0.0.1:59999/cmaps/', cMapPacked: true });
+  assert.equal(dead.itemCount, 0, 'CMap 源取不到时 items 应为空数组（不抛错）');
+  assert.equal(dead.nonEmpty, 0, '且不产出任何非空文本');
+
+  const alive = await extract(FIXTURE, { cMapUrl: CMAPS + '/', cMapPacked: true });
+  assert.ok(alive.nonEmpty > 0, '换成可用源后应立刻恢复（证明差异只在源，不在 PDF 本身）');
 });
