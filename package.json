@@ -13,6 +13,7 @@
   "keywords": ["timetable", "course-schedule", "electron", "零依赖"],
   "license": "MIT",
   "devDependencies": {
-    "jsdom": "^30.0.0"
+    "jsdom": "^30.0.0",
+    "pdfjs-dist": "3.11.174"
   }
 }

@@ -239,3 +239,59 @@ test('回归：节次括号被摘除后不得残留孤立左括号（体育(7-8�
   assert.equal(r.items[0].startSection, 7);
   assert.equal(r.items[0].endSection, 8);
 });
+
+// ==================== 回归：4 字短课名不得被「详情行互换」顶替 ====================
+//
+// 背景（由旋转课表 PDF 的端到端夹具抓出）：
+//   parser 有一条「详情行互换」逻辑，用于处理「课程名一行、详情行跟随」的排版
+//   （如第 1 行「程序设计基础」，第 2 行「教学楼B105 陈老师」—— 第 2 行里唯一的
+//   内容 token 其实是教师，需要把课名从上文继承过来）。
+//   该逻辑的判据是 looksLikeTeacher(name) && !looksLikeCourseName(name)，
+//   而 looksLikeCourseName 靠「学/论/语/数学/…」这类词尾白名单判断 ——
+//   「线性代数」是 4 个汉字、又不以白名单词尾结尾，于是被判成「人名」，
+//   课名被上一门课覆盖。同类还会中招：「微积分」「大学物理」等。
+//
+//   修法不是继续堆词表（堆不完，且会引发别的误判），而是加两道【结构性】门槛：
+//     ① 本行已显式写「教师:X」→ 教师字段有出处，首 token 必然是课名
+//     ② 本行除地点外只剩一个内容 token → 才符合「详情行」的形状
+//   下面两条测试分别守护这两道门槛。
+
+test('回归：带「教师:」标注的行，首 token 必须是课名，不得被互换（门槛①）', () => {
+  const text = [
+    '体育 星期一 1-2节 1-16周',
+    '线性代数 星期四 5-6节 1-16周 教师:郑十'
+  ].join('\n');
+  const r = CP.parseScheduleText(text, OPTS);
+  assert.equal(r.items.length, 2);
+  assert.equal(r.items[0].name, '体育');
+  assert.equal(r.items[1].name, '线性代数', '「线性代数」是课名，不得被替换成上一条的「体育」');
+  assert.equal(r.items[1].teacher, '郑十');
+  assert.equal(r.items[1].day, 4);
+  assert.equal(r.items[1].startSection, 5);
+});
+
+test('回归：本行自带课程编号等多个内容 token 时，不得继承上一行课名（门槛②）', () => {
+  const text = [
+    '体育 星期一 1-2节 1-16周',
+    '线性代数 星期四 (GBK0102003) 5-6节 1-16周'
+  ].join('\n');
+  const r = CP.parseScheduleText(text, OPTS);
+  assert.equal(r.items.length, 2);
+  assert.equal(
+    r.items[1].name,
+    '线性代数',
+    '本行带自己的课程编号 → 它是一行完整的课程描述，不得借用上一行的课名'
+  );
+  assert.equal(r.items[1].day, 4);
+});
+
+test('回归：真正的详情行仍必须能继承上一行课名（门槛不得过度收紧）', () => {
+  const text = [
+    '程序设计基础',
+    '1-16周 星期一 1,2节 教学楼B105 陈老师'
+  ].join('\n');
+  const r = CP.parseScheduleText(text, OPTS);
+  assert.equal(r.items.length, 1);
+  assert.equal(r.items[0].name, '程序设计基础', '详情行必须继承上一行课名');
+  assert.equal(r.items[0].teacher, '陈老师', '详情行里唯一的内容 token 是教师');
+});

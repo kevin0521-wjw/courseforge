@@ -21,6 +21,45 @@
   ];
   var PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
 
+  /**
+   * CMap 目录 —— 中文 PDF 能不能解出文字，全看这一项。
+   *
+   * 国内教务系统导出的 PDF 普遍用 Type0 + CMap 编码的非嵌入字体
+   * （如 STSong-Light + UniGB-UCS2-H）。pdf.js 必须加载对应的 .bcmap
+   * 才能把字符码映射成文字；缺了它 getTextContent() 会返回 **0 个 item**
+   * ——不是乱码，是彻底空白，最终表现为「PDF 中未提取到文字」。
+   * pdf.js 内部会抛 "The CMap baseUrl parameter must be specified"。
+   *
+   * 优先用随包发布的本地 cmaps/ 目录：无外部依赖、离线可用、
+   * Electron 断网也能导入中文课表。若本地目录不可用（例如单文件版
+   * 只有一个 html、或部署时漏传了 cmaps/），自动回退到同版本 CDN。
+   * 探测结果缓存，一次会话只探一次。
+   */
+  var CMAP_BASE = 'cmaps/';
+  var CMAP_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/';
+  // 用 UniGB-UCS2-H 当探针：任何 pdfjs-dist 发行版都带它，
+  // 而且它正是中文 PDF 最需要的那一个，探到即说明本地目录可用。
+  var CMAP_PROBE = 'UniGB-UCS2-H.bcmap';
+
+  var cmapBasePromise = null;
+  function resolveCMapBase() {
+    if (cmapBasePromise) return cmapBasePromise;
+    cmapBasePromise = new Promise(function (resolve) {
+      var done = false;
+      var finish = function (base) { if (!done) { done = true; resolve(base); } };
+      try {
+        fetch(CMAP_BASE + CMAP_PROBE)
+          .then(function (res) { finish(res && res.ok ? CMAP_BASE : CMAP_CDN); })
+          .catch(function () { finish(CMAP_CDN); });
+        // 探测请求不该拖慢导入：2 秒内没结果就直接用 CDN
+        setTimeout(function () { finish(CMAP_CDN); }, 2000);
+      } catch (e) {
+        finish(CMAP_CDN);
+      }
+    });
+    return cmapBasePromise;
+  }
+
   var bridge = null;          // { getSettings, apply, toast }
   var parsedItems = [];       // 解析结果（可编辑）
   var ocrWorker = null;       // Tesseract worker 缓存
@@ -292,11 +331,19 @@
   function runPdf(file) {
     setStatus('正在加载 PDF 引擎…');
     setProgress(0.05);
-    ensurePdfJs().then(function () {
+    var cmapBase = CMAP_CDN;
+    Promise.all([ensurePdfJs(), resolveCMapBase()]).then(function (r) {
+      cmapBase = r[1];
       return file.arrayBuffer();
     }).then(function (buf) {
       setStatus('正在解析 PDF…');
-      return window.pdfjsLib.getDocument({ data: buf }).promise;
+      // cMapUrl + cMapPacked 必须传：中文课表用的 Type0/CMap 字体
+      // 全靠它才能解码，缺了会一个字符都读不出来（详见文件顶部说明）。
+      return window.pdfjsLib.getDocument({
+        data: buf,
+        cMapUrl: cmapBase,
+        cMapPacked: true
+      }).promise;
     }).then(function (doc) {
       var texts = [];
       var pages = [];

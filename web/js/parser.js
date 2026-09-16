@@ -262,7 +262,10 @@
     for (var i = 0; i < tokens.length; i++) {
       if (looksLikeLocation(tokens[i])) { location = tokens[i]; break; }
     }
-    return { name: name, teacher: teacher, location: location };
+    // nonLocCount：本行除地点外还剩几个内容 token。
+    // 调用方用它判断「这一行自己有没有课程身份」——只剩一个内容 token 的行
+    // 才可能是「教学楼B105 陈老师」这种挂在上一行课名下的详情行。
+    return { name: name, teacher: teacher, location: location, nonLocCount: nonLoc.length };
   }
 
   // ==================== 主入口 ====================
@@ -345,12 +348,15 @@
       if (timeSec && timeSec.matched) rest = rest.split(timeSec.matched).join(' ');
       if (/(单周|\(单\))/.test(rest)) rest = rest.replace(/单周|\(单\)/g, ' ');
       if (/(双周|\(双\))/.test(rest)) rest = rest.replace(/双周|\(双\)/g, ' ');
-      // 显式教师标注可能被「/」切成多段（教师:闵伟/选 课备注:…）。
-      // 只删一次会留下「/选」这类残片，而残片一旦排在课名前就会被 splitRest
-      // 当成课名（实测「教师:闵伟/选 体育…」会解析出课名「选」）。
-      // 所以这里做两件事：
-      //   1) 吃掉「教师:xxx」及其后的分隔符与紧跟的选课类型残片（选/必/限/任/公选…）
-      //   2) 确保残片被清干净，避免污染课名
+      // 显式教师标注要整段摘掉，否则残片会被 splitRest 当成课名。
+      // 上面第 313 行的捕获正则在「/」处截断（教师:闵伟/选 → 只取到「闵伟」），
+      // 于是 rest 里还留着「/选」。这里的清理分两部分，作用各自独立：
+      //   1) 尾部 `[/|]?\s*(?:选修|…|选|必)?` —— 吃掉「/」和紧随的选课类型残片。
+      //      这是真正解决「解析出课名『选』」的那一半，被变异 7 守护。
+      //   2) 末尾的 g 标志 —— 纯防御：清理正则的前缀必须是「教师/老师/授课 + 冒号」，
+      //      而一行剩余文本里正常只可能出现一处（真实课表形如「教师:闵伟/选」）。
+      //      已实测去掉 g 后全部测试仍绿（等价变异，登记在 tools/mutation-check.mjs），
+      //      保留它只是为了万一遇到「教师:X 授课:Y」这类多标注写法时不留下第二处。
       if (teacherExplicit) {
         rest = rest.replace(
           /(?:教师|老师|授课)[:：]\s*[^\s,;，/|、]*\s*[/|]?\s*(?:选修|必修|限选|任选|公选|选|必)?\s*/g,
@@ -368,9 +374,26 @@
       var teacher = parts.teacher;
       // 「互换」只在确实像详情行时才做：本行唯一可当课名的 token 其实像人名，
       // 且上一行留下了课名（pendingName）—— 形如「教学楼B105 陈老师」这种详情行。
-      // 判据必须是「像人名且不像课名」（中文短课名如「学术英语」与人名同形，
-      // 只看字数会误换，导致本行课名被上一行顶替；批量解析教务课表时必现串台）。
-      if (name && pendingName && !teacher && looksLikeTeacher(name) && !looksLikeCourseName(name)) {
+      //
+      // ⚠️ 光靠「像人名 & 不像课名」的形态判断不够（实测漏网）：
+      //   「线性代数」是 4 个汉字，且不以「学/论/语/数学/…」等常见课名词尾结尾，
+      //   于是 looksLikeCourseName 为 false、looksLikeTeacher 为 true，
+      //   被当成人名换掉，课名被上一门课顶替（星期四 5-6 节的「线性代数」
+      //   变成了上一格的「体育」）。同类还会中招的有「微积分」「大学物理」等。
+      //   修法不是继续往词表白名单里堆词（永远堆不完、还会引发别的误判），
+      //   而是加两道【结构性】门槛——它们跟词表无关，因此不会顾此失彼：
+      //
+      //   ① 本行已显式写「教师:X」→ 教师字段有出处，首 token 必然是课名。
+      //      真实教务课表的每一行都带「教师:XXX」，这一条直接堵死整类误判。
+      //   ② 本行除地点外只剩一个内容 token → 它没有任何自己的课程身份
+      //      （不带课程编号、不带学分备注），才符合「详情行」的形状；
+      //      而「线性代数 (GBK0102003) (5-6节)… 学分:4.0」有多个内容 token，
+      //      说明这一行自己就是完整的课程描述，不得借用上一行的课名。
+      if (
+        name && pendingName && !teacher && !teacherExplicit &&
+        parts.nonLocCount === 1 &&
+        looksLikeTeacher(name) && !looksLikeCourseName(name)
+      ) {
         teacher = name;
         name = pendingName;
       }
@@ -404,7 +427,11 @@
       for (var di = 0; di < days.length; di++) {
         items.push({
           name: name,
-          teacher: teacherExplicit || parts.teacher || '',
+          // ⚠️ 必须用局部变量 teacher，不能用 parts.teacher。
+          // 「详情行互换」时 teacher 被赋成了那一行的唯一内容 token（人名），
+          // 而 parts.teacher 此时是空的 —— 写成 parts.teacher 会把互换结果丢掉，
+          // 表现为「教学楼B105 陈老师」这类详情行的教师字段始终为空。
+          teacher: teacherExplicit || teacher || '',
           location: locationExplicit || parts.location || '',
           day: days[di],
           startSection: sec ? sec.start : null,

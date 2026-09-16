@@ -128,16 +128,107 @@
     return wide * fs;
   }
 
+  /**
+   * 把整页文字「扶正」。
+   *
+   * 教务导出的 PDF 常带页级 /Rotate（本案例是 90°）。pdf.js 的
+   * getTextContent() 会把这个页旋转烘焙进**每一个** item.transform，
+   * 于是整页 87 个片段全带旋转分量。早期实现「一见旋转就丢弃」，
+   * 结果整页被清空 —— 一门课都解析不出来。
+   *
+   * 这个 bug 特别隐蔽：用「自己从内容流抽取的坐标」做测试发现不了它。
+   * 那种夹具拿到的是未旋转的原始矩阵（[size,0,0,size,x,y]），而运行时
+   * pdf.js 给的是 [0,size,-size,0,x,y]。两者约定不一致，bug 就藏在缝里。
+   * 教训：验证必须走真实的那一层，别用等价物代替。
+   *
+   * 做法：取出现次数最多的基线方向当页面朝向，把所有片段整体反向旋转。
+   * 整页是刚性旋转，相对几何关系不变，因此行/列聚类逻辑无需改动。
+   * 页旋转为 0 时主导角也是 0 → 原样返回，既有行为完全不受影响。
+   */
+  function rectifyItems(items) {
+    if (!items || !items.length) return items;
+
+    // 1) 统计主导基线方向。
+    //    这里只做【粗分桶】用于找出主方向对应的片段集合；
+    //    真正的旋转角必须用未量化的精确值（见第 2 步），
+    //    否则量化误差会被页面尺寸放大成肉眼可见的行漂移 ——
+    //    实测把角度量化到 0.1 弧度（≈5.7°）时，误差约 1.7°，
+    //    跨 620pt 的页面累积出 18pt 垂直偏移，表头七个星期
+    //    被拆到不同视觉行，整张表的列识别直接失效。
+    var i;
+    var counts = {};
+    var bestKey = null;
+    var bestCount = 0;
+    for (i = 0; i < items.length; i++) {
+      var t = items[i] && items[i].transform;
+      if (!t) continue;
+      var a0 = t[0];
+      var b0 = t[1];
+      if (!isFiniteNum(a0) || !isFiniteNum(b0)) continue;
+      if (Math.sqrt(a0 * a0 + b0 * b0) < 0.01) continue; // 零长度，方向无意义
+      var key = (Math.round(Math.atan2(b0, a0) * 100) / 100).toFixed(2);
+      counts[key] = (counts[key] || 0) + 1;
+      if (counts[key] > bestCount) {
+        bestCount = counts[key];
+        bestKey = key;
+      }
+    }
+    if (bestKey === null) return items;
+
+    // 2) 对属于主方向的片段求【精确】平均角（围绕主方向展开，不存在绕圈问题）
+    var target = parseFloat(bestKey);
+    var sum = 0;
+    var n = 0;
+    for (i = 0; i < items.length; i++) {
+      var t2 = items[i] && items[i].transform;
+      if (!t2) continue;
+      var a1 = t2[0];
+      var b1 = t2[1];
+      if (!isFiniteNum(a1) || !isFiniteNum(b1)) continue;
+      if (Math.sqrt(a1 * a1 + b1 * b1) < 0.01) continue;
+      var ang = Math.atan2(b1, a1);
+      if (Math.abs(ang - target) > 0.05) continue; // 只算与主方向一致的
+      sum += ang;
+      n++;
+    }
+    var theta = n ? sum / n : target;
+
+    // 本来就正立 → 不动，保持既有行为
+    if (Math.abs(theta) < 0.001) return items;
+
+    // 3) 绕原点反向旋转 R(-θ)：平移量按 R(-θ) 变换，
+    //    线性部分化为「水平 + 字号 = 基线长度」。
+    var cos = Math.cos(theta);
+    var sin = Math.sin(theta);
+    var out = [];
+    for (i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it || !it.transform) { out.push(it); continue; }
+      var tr = it.transform;
+      var e = isFiniteNum(tr[4]) ? tr[4] : 0;
+      var f = isFiniteNum(tr[5]) ? tr[5] : 0;
+      var size = Math.sqrt(tr[0] * tr[0] + tr[1] * tr[1]);
+      out.push({
+        str: it.str,
+        width: it.width,
+        height: it.height,
+        transform: [size, 0, 0, size, cos * e + sin * f, -sin * e + cos * f]
+      });
+    }
+    return out;
+  }
+
   /** 把 pdf.js 的 textContent.items 转成规整的片段数组（过滤空串与旋转文本） */
   function normalizeItems(items) {
     var out = [];
     if (!items || !items.length) return out;
+    items = rectifyItems(items); // 先扶正整页，再去掉角度与主导方向不一致的杂项
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
       if (!it || typeof it.str !== 'string') continue;
       if (!it.str.replace(/\s/g, '')) continue;
       var tr = it.transform || [];
-      // b、c 是旋转分量；课表不会有旋转文字，有的话宁可跳过也不要污染坐标
+      // 扶正之后仍有旋转分量 → 与正文不同角度的杂项（如竖排标签），跳过
       if (isFiniteNum(tr[1]) && isFiniteNum(tr[2]) &&
           (Math.abs(tr[1]) > 0.01 || Math.abs(tr[2]) > 0.01)) continue;
       out.push({
@@ -593,6 +684,10 @@
     normalizeItems: normalizeItems,
     groupRows: groupRows,
     splitCells: splitCells,
-    findColumns: findColumns
+    findColumns: findColumns,
+    findDayColumns: findDayColumns,
+    columnIndex: columnIndex,
+    mergeSegments: mergeSegments,
+    rectifyItems: rectifyItems
   };
 });
