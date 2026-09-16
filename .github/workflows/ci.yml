@@ -20,5 +20,9 @@ jobs:
         run: node --test
       - name: DOM / data-action / CSS 静态检查
         run: node tools/check-dom.mjs
+      - name: 变异测试（确认断言真的会变红）
+        # 故意改坏被测代码，验证护栏有效 —— 防的是「断言恒真、等于没写」。
+        # 本地实测约 3.5 分钟；脚本监听 SIGTERM，被强杀也会还原源码。
+        run: node tools/mutation-check.mjs
       - name: 单文件打包冒烟
         run: node tools/build-standalone.mjs

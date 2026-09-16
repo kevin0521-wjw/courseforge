@@ -9,7 +9,8 @@
     "check:browser": "node tools/browser-selftest.mjs",
     "verify": "node --test && node tools/check-dom.mjs && node tools/mutation-check.mjs && node tools/build-standalone.mjs",
     "build:standalone": "node tools/build-standalone.mjs",
-    "start:web": "node tools/serve.mjs"
+    "start:web": "node tools/serve.mjs",
+    "tunnel": "node tools/tunnel.mjs"
   },
   "keywords": ["timetable", "course-schedule", "electron", "零依赖"],
   "license": "MIT",

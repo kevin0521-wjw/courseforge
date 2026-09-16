@@ -26,7 +26,7 @@
 - 📤 **一键备份恢复**：导出 JSON 备份、导入恢复，换设备迁移只需一个文件
 - 📱 **移动端适配**：手机浏览器打开即可使用；触屏点击区 ≥ 44px、输入字号 ≥ 16px
 - 📲 **PWA**：可添加到手机主屏幕当 App 用，Service Worker 离线缓存，断网可打开
-- 🧪 **自带测试**：230 项 `node --test` 测试（含 jsdom 全流程），CI 自动跑
+- 🧪 **自带测试**：295 项 `node --test` 测试（含 jsdom 全流程），CI 自动跑
 
 ## 🖼 界面预览
 
@@ -86,6 +86,23 @@ npm run start:web        # 启动本地服务器，浏览器打开 http://localh
 
 不想装 Node？直接打开 `dist/CourseForge-standalone.html`（单文件打包版，可拷贝到任何设备）。
 
+#### 用手机真机测（内网穿透）
+
+手机上访问不到电脑的 `127.0.0.1`；而「添加到主屏幕」这类 PWA 能力**必须走 HTTPS**，
+用局域网 IP 也不行。`npm run tunnel` 一条命令就能把本地服务暴露成公网 HTTPS 地址：
+
+```bash
+npm run tunnel                 # 自动拉起本地服务 + 建立隧道
+npm run tunnel -- --no-server  # 本地服务已在跑时，只建隧道
+PORT=8080 npm run tunnel       # 换端口（默认 5173）
+```
+
+运行后输出里会给出形如 `https://xxxx.r16.vip.cpolar.cn` 的地址，**手机直接打开即可，不需要连同一个 WiFi**。
+改完代码手机刷新就能看到，比每次重新部署快得多。
+
+需要本机装好 [cpolar](https://www.cpolar.com/) 并登录（`cpolar authtoken <你的token>`）；
+换路径可用 `CPOLAR_PATH` 环境变量指定。Ctrl+C 停止隧道。注意免费版分到的域名**每次启动都可能变**，以输出为准。
+
 ### 方式二：桌面端（Electron）
 
 ```bash
@@ -137,10 +154,17 @@ courseforge/
 │   ├── preload.js          # 预加载：向页面注入桌面环境标识与教务直连能力
 │   └── package.json
 ├── tests/                  # 测试（node --test，无需安装任何依赖）
-├── tools/                  # 开发脚本：静态服务器 / 单文件打包 / DOM 静态检查
+│   └── fixtures/           #   PDF / 教务文本夹具（真实来源，姓名与学号已化名）
+├── tools/                  # 开发脚本
+│   ├── serve.mjs           #   本地静态服务器（npm run start:web）
+│   ├── tunnel.mjs          #   内网穿透：把本地服务暴露成公网 HTTPS（npm run tunnel）
+│   ├── build-standalone.mjs#   单文件打包
+│   ├── check-dom.mjs       #   DOM / data-action / CSS 静态检查
+│   ├── mutation-check.mjs  #   变异测试：故意改坏代码，确认断言真的会变红
+│   └── browser-selftest.mjs#   真机自检：headless 浏览器 + CDP 跑真实 PDF 导入链路
 ├── docs/PROMPTS.md         # 🤖 AI 开发提示词手册（用 AI 继续迭代本项目必读）
 ├── docs/COMPARISON.md      # 📊 竞品对比与优化清单（功能矩阵 / 差异化定位 / 缺口优先级）
-└── .github/workflows/      # CI：push 时自动跑测试
+└── .github/workflows/      # CI：push 时跑测试 + 静态检查 + 变异测试 + 打包冒烟
 ```
 
 ## 🖨 打印与日历导出
@@ -174,15 +198,21 @@ app.js（调度层：事件 → 改数据 → refreshAll() 统一刷新）
 npm install              # 只为装 jsdom（可选，用于 DOM 全流程测试）；不装也能跑其余测试
 npm test                 # 运行全部测试（node 内置 test runner）
 npm run check:dom        # 静态检查：DOM id / data-action 接线 / CSS 结构 / 桌面端 IPC 通道
+npm run check:mutation   # 变异测试：故意改坏被测代码，确认断言真的会变红
+npm run check:browser    # 真机自检：headless Edge + CDP 跑一遍真实 PDF 导入链路
 npm run build:standalone # 生成 dist/CourseForge-standalone.html 单文件版
-npm run verify           # 测试 + 静态检查 + 打包冒烟，一条命令跑完
+npm run verify           # 测试 + 静态检查 + 变异测试 + 打包冒烟，一条命令跑完
 ```
+
+> `check:browser` 不在 `verify` 里：它要真实网络和图形环境（会拉起 headless 浏览器），
+> 不适合当默认门禁，按需手动跑。它补的是 Node 测试覆盖不到的那一段 —— 同源相对路径取
+> CMap、pdf.js worker 加载、各镜像在真实网络下的可达性。缺浏览器时可用 `EDGE_PATH` 指定。
 
 > **运行时零依赖，依赖只在测试层**：`jsdom` 仅用于驱动真实 `index.html` 跑全流程测试，未安装时这些用例自动跳过（不阻断）。交付产物（网页版 / 单文件版 / 桌面端）不依赖任何 npm 包。
 
 测试覆盖：跨年/跨月周次计算、单双周生成、节次冲突检测、课程校验、导入数据清洗、渲染字符串安全性（XSS 转义）、localStorage 异常兜底、课表文本解析（16 项）、ICS 日历生成（RFC 5545 折行/转义/跨年）、深色主题变量完整性、显示周末联动、移动端触屏硬指标（44px 点击区 / 16px 输入字号）、多学期工作区（v1→v2 迁移、增删改语义、切换不串台）、教务系统 HTML 解析（网格/转置/列表三种版面 + rowspan 合并 + 一格多课 + script/注释干扰 + 降级提示）、学期 UI 回归护栏（class 有样式 / 复合选择器点击区 / 动作已注册 / 改动必落盘）、jsdom 全流程（打开页面 → 切周 → 新增课程 → 刷新持久化 → 新建/切换/重命名/删除学期 → 教务直连读回并入库）。
 
-> 当前 **230 项测试全部通过**。
+> 当前 **295 项测试全部通过**。
 
 ## 🗺 路线图
 
