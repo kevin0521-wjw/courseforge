@@ -162,6 +162,7 @@ courseforge/
 │   ├── check-dom.mjs       #   DOM / data-action / CSS 静态检查
 │   ├── mutation-check.mjs  #   变异测试：故意改坏代码，确认断言真的会变红
 │   └── browser-selftest.mjs#   真机自检：headless 浏览器 + CDP 跑真实 PDF 导入链路
+│   └── desktop-selftest.mjs#   桌面端自检：真启动 Electron，用 CDP 验证 preload / IPC / 安全边界
 ├── docs/PROMPTS.md         # 🤖 AI 开发提示词手册（用 AI 继续迭代本项目必读）
 ├── docs/COMPARISON.md      # 📊 竞品对比与优化清单（功能矩阵 / 差异化定位 / 缺口优先级）
 └── .github/workflows/      # CI：push 时跑测试 + 静态检查 + 变异测试 + 打包冒烟
@@ -200,13 +201,19 @@ npm test                 # 运行全部测试（node 内置 test runner）
 npm run check:dom        # 静态检查：DOM id / data-action 接线 / CSS 结构 / 桌面端 IPC 通道
 npm run check:mutation   # 变异测试：故意改坏被测代码，确认断言真的会变红
 npm run check:browser    # 真机自检：headless Edge + CDP 跑一遍真实 PDF 导入链路
+npm run check:desktop    # 桌面端自检：真启动 Electron，验证 preload 注入 / IPC 往返 / 安全边界
 npm run build:standalone # 生成 dist/CourseForge-standalone.html 单文件版
 npm run verify           # 测试 + 静态检查 + 变异测试 + 打包冒烟，一条命令跑完
 ```
 
-> `check:browser` 不在 `verify` 里：它要真实网络和图形环境（会拉起 headless 浏览器），
-> 不适合当默认门禁，按需手动跑。它补的是 Node 测试覆盖不到的那一段 —— 同源相对路径取
-> CMap、pdf.js worker 加载、各镜像在真实网络下的可达性。缺浏览器时可用 `EDGE_PATH` 指定。
+> `check:browser` / `check:desktop` 不在 `verify` 里：它们要真实网络与图形环境
+> （会拉起浏览器 / Electron），不适合当默认门禁，按需手动跑。
+> `check:browser` 补的是 Node 测试覆盖不到的那一段 —— 同源相对路径取 CMap、
+> pdf.js worker 加载、各镜像在真实网络下的可达性（缺浏览器可用 `EDGE_PATH` 指定）；
+> `check:desktop` 则验证静态检查做不到的部分 —— preload 是否真的注入了
+> `window.CourseForgeDesktop`、`edu:*` IPC 是否真的能往返、以及 `sanitizeUrl`
+> 在真实调用链上是否真的拦得住 `javascript:` / `file://` 这类协议（16 项断言；
+> 需先在 `desktop/` 里 `npm install`）。
 
 > **运行时零依赖，依赖只在测试层**：`jsdom` 仅用于驱动真实 `index.html` 跑全流程测试，未安装时这些用例自动跳过（不阻断）。交付产物（网页版 / 单文件版 / 桌面端）不依赖任何 npm 包。
 

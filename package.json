@@ -7,6 +7,7 @@
     "check:dom": "node tools/check-dom.mjs",
     "check:mutation": "node tools/mutation-check.mjs",
     "check:browser": "node tools/browser-selftest.mjs",
+    "check:desktop": "node tools/desktop-selftest.mjs",
     "verify": "node --test && node tools/check-dom.mjs && node tools/mutation-check.mjs && node tools/build-standalone.mjs",
     "build:standalone": "node tools/build-standalone.mjs",
     "start:web": "node tools/serve.mjs",

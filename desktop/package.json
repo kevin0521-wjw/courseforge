@@ -8,7 +8,7 @@
     "dist": "electron-builder --win"
   },
   "devDependencies": {
-    "electron": "^44.3.0"
+    "electron": "^33.4.11"
   },
   "build": {
     "appId": "com.kevin0521.courseforge",
