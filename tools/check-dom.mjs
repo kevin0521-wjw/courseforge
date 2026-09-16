@@ -11,7 +11,13 @@ import { dirname, join } from 'node:path';
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const WEB = join(ROOT, 'web');
 const html = await readFile(join(WEB, 'index.html'), 'utf-8');
-const files = ['core.js', 'storage.js', 'render.js', 'parser.js', 'edu-html.js', 'ics.js', 'importer.js', 'app.js'];
+// 脚本清单从 index.html 的 <script src> 自动推导，而不是硬编码 ——
+// 硬编码名单曾经漏掉新增的 pdf-layout.js，导致它的 id 引用完全不被检查。
+const files = [...html.matchAll(/<script[^>]+src="js\/([\w-]+\.js)"/g)].map((m) => m[1]);
+if (!files.length) {
+  console.error('检查失败：未能从 index.html 解析出任何本地脚本引用');
+  process.exit(1);
+}
 
 // HTML 中声明的所有 id
 const htmlIds = new Set();
@@ -134,6 +140,40 @@ if (cjkPunct) {
 
 const ruleCount = (stripped.match(/\{/g) || []).length;
 console.log(`CSS 结构检查通过：${ruleCount} 个规则块，大括号配对、无中文标点`);
+
+// ---- Service Worker 预缓存清单覆盖校验 ----
+// sw.js 的 ASSETS 必须覆盖 index.html 引用的每一个本地脚本/样式。
+// 漏一个的后果很隐蔽：在线时靠 fetch 兜底看不出来，一旦首次离线访问，
+// 缺失脚本的请求会 fallback 到 index.html，把 HTML 当 JS 返回 →
+// 解析报错、整个应用崩溃。这类 bug 只在断网时才暴露，必须静态拦截。
+try {
+  const sw = await readFile(join(WEB, 'sw.js'), 'utf-8');
+  const assetsBlock = sw.match(/const ASSETS\s*=\s*\[([\s\S]*?)\]/);
+  if (!assetsBlock) {
+    console.error('检查失败：sw.js 中找不到 ASSETS 数组');
+    process.exit(1);
+  }
+  const precached = new Set(
+    [...assetsBlock[1].matchAll(/['"]\.?\/?([^'"]+)['"]/g)].map((m) => m[1])
+  );
+
+  const needed = refs.filter((u) => /\.(?:js|css)$/.test(u));
+  const notCached = needed.filter((u) => !precached.has(u));
+
+  if (notCached.length) {
+    console.error('检查失败：以下资源被 index.html 引用但未写入 sw.js 的 ASSETS 预缓存清单');
+    console.error('（在线时看不出问题，首次离线访问会导致应用崩溃）：');
+    for (const f of notCached) console.error('  - ' + f);
+    process.exit(1);
+  }
+  console.log(`SW 预缓存检查通过：${needed.length} 个脚本/样式全部已列入 ASSETS（共 ${precached.size} 项）`);
+} catch (e) {
+  if (e && e.code === 'ENOENT') {
+    console.log('SW 预缓存检查跳过：未找到 sw.js');
+  } else {
+    throw e;
+  }
+}
 
 // ---- 桌面端 IPC 通道名一致性 ----
 // preload 里 ipcRenderer.invoke('x') 与 main 里 ipcMain.handle('x') 必须一一对应。
