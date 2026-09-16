@@ -7,7 +7,8 @@
  *
  * 因此断言分两层：
  *   1) 各内部步骤（分行/切格/推列）单独可验证
- *   2) 用真实 PDF 夹具（tests/fixtures/shu-kb.json，87 个带坐标片段）走端到端
+ *   2) 用源自真实课表的 PDF 夹具（tests/fixtures/shu-kb.json，87 个带坐标片段）走端到端
+ *      —— 姓名与学号已替换为化名，且刻意保持字符宽度与原值一致，故不影响版面/宽度断言
  */
 import test from 'node:test';
 import assert from 'node:assert';
