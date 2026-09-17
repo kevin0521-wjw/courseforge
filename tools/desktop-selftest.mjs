@@ -248,8 +248,13 @@ try {
   if (PACKAGED) {
     // 打包版必须从 resources/web 读页面。若这里仍指向源码目录，
     // 说明收到的是「开发态跑通了」的假阳性 —— 最容易被当成打包成功。
+    //
+    // 注意别把输出目录名写进断言：受限沙箱里批量删除会被拦，于是经常换名重打包
+    // （release-dist / release-nsis / release-latest…），
+    // 写死 `release/` 会把这些**完全正常**的产物判成失败（曾真的这样误报过一次）。
+    // 判据只认「路径里有 resources/web/index.html」——源码目录不可能含 resources/。
     check('页面确实来自安装包内的 resources/web',
-      /[\\/]release[\\/][^\\/]+[\\/]resources[\\/]web[\\/]index\.html$/.test(decodeURIComponent(info.url)),
+      /resources[\\/]web[\\/]index\.html$/.test(decodeURIComponent(info.url)),
       decodeURIComponent(info.url).replace(/^file:\/\/\//, ''));
   }
   check('页面已渲染出内容', info.dom.bodyTextLen > 100, '正文 ' + info.dom.bodyTextLen + ' 字符');
