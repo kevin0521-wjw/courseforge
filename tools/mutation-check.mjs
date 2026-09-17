@@ -38,6 +38,7 @@ const FILES = {
   sw: path.join(ROOT, 'web/sw.js'),
   standalone: path.join(ROOT, 'tools/build-standalone.mjs'),
   indexHtml: path.join(ROOT, 'web/index.html'),
+  share: path.join(ROOT, 'web/js/share-image.js'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
 const FIXTURE = 'tests/fixtures/cjk-timetable-rotated.pdf';
@@ -455,6 +456,185 @@ const ONLY = process.env.MUT_ONLY !== undefined ? Number(process.env.MUT_ONLY) :
 // 没法用文本替换注入（要真去改 PNG 的像素），所以这里不登记；
 // 它的有效性是手工验证过的：把 maskable 上边一条像素抹成透明 → 测试精确报出
 // 「边缘有 514 个透明像素」。
+
+// ==================== 课表分享图（web/js/share-image.js）====================
+//
+// 这个功能的验收标准是「导出的图看着对」，最容易出现的失败不是崩溃，
+// 而是「图导出来了、但某处明显不对」：两门课叠一起、课名切一半、
+// 切了深色主题图没变。所以这里挑的变异都是**那种肉眼一看就废、代码却照跑不误**的改动。
+
+// 26) 泳道边界判断写成 <=（相邻节次的两门课被当成不冲突）。
+//     如「1-2 节」与「2-3 节」共享第 2 节，写成 <= 就会把后一门叠在前一门身上。
+//     这类 off-by-one 是泳道算法最典型的 bug，而且画出来只是「两个字重叠」，
+//     不会报任何错。
+{
+  const anchor = '        if (last.endSection < c.startSection) {';
+  mutations.push({
+    name: '泳道边界写成 <=（相邻节次的两门课叠在一起）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '        if (last.endSection <= c.startSection) { // MUTANT') : s)
+  });
+}
+
+// 27) 周次文案再补一个「周」—— **这是真实发生过的 bug**（图上印出「1-16 周周」）。
+//     屏幕上根本不显示这段文字，所以只有真把图导出来才看得见。
+{
+  const anchor = "      return CF.weeksText(course.weeks) || '';";
+  mutations.push({
+    name: '周次文案重复补「周」（图上印出「1-16 周周」）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "      return (CF.weeksText(course.weeks) || '') + '周'; // MUTANT")
+      : s)
+  });
+}
+
+// 28) 截断时不计省略号本身的宽度 → 截断结果仍然比可用宽度宽一点点，
+//     正好糊住隔壁泳道。试断言的是「截断后真的放得下」，不只「有没有省略号」。
+{
+  const anchor = '      if (measure(next, size) + ellW > maxWidth) break;';
+  mutations.push({
+    name: '截断时不计省略号宽度（课名仍然溢出格子）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '      if (measure(next, size) > maxWidth) break; // MUTANT')
+      : s)
+  });
+}
+
+// 29) 课块纵向定位差一节（`start - 1` 写成 `start`）。
+//     结果「第 1 节的课」被画到第 2 节的位置，整张表的课都错行一边。
+{
+  const anchor = '          var blockY = bodyY + (csp.start - 1) * ROW_H + GAP;';
+  mutations.push({
+    name: '课块纵向错位一节（第 1 节的课画到第 2 节的位置）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '          var blockY = bodyY + csp.start * ROW_H + GAP; // MUTANT')
+      : s)
+  });
+}
+
+// 30) 不再跳过「节次超出当前作息」的课。
+//     换过作息预设后老数据里常有 13~16 节的课（比如从 12 节改成 10 节）。
+//     注意这条的**可观测后果不是画到画布外**——往下那块「高度不足 18px 就放弃」
+//     的兜底会顺手把它丢掉。真正的后果是：这门课被算进了 visible，
+//     于是页脚写「共 2 门课程」而图上只有 1 块 —— 用户会以为课丢了。
+//     第一版就是只断言 blocks 内容，结果这条变异全绿（假护栏），
+//     补了「页脚门数 == 课块数」的断言才拦住。
+{
+  const anchor = '      if (sp.start > totalSections) continue; // 节次超出当前作息（换过作息预设）→ 画不出来';
+  mutations.push({
+    name: '不跳过超出当前作息的节次（页脚门数与图上课块数不一致）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '      // MUTANT: 不再跳过超界节次')
+      : s)
+  });
+}
+
+// 31) 深色主题的底色写成浅色（切了主题但图没变）。
+//     开关动了、预览也重画了，就是颜色没跟上 —— 用户会以为「深色导出坏了」。
+{
+  const anchor = "      bg: '#0f131a', panel: '#171c25', line: '#262e3b', grid: '#202733',";
+  mutations.push({
+    name: '深色主题底色写成浅色（切了主题但图没变）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "      bg: '#ffffff', panel: '#171c25', line: '#262e3b', grid: '#202733', // MUTANT")
+      : s)
+  });
+}
+
+// 32) overrides 不再覆盖配色 —— 浏览器端把当前主题的 CSS 变量解析出来传进来，
+//     就是为了让导出的图跟随屏幕配色；这条一断，深色主题下导出的还是浅色配色方案。
+{
+  const anchor = '        if (overrides[k] && overrides[k].main) out[k].main = overrides[k].main;';
+  mutations.push({
+    name: '配色 overrides 不生效（导出的图不跟随当前主题配色）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '        // MUTANT: overrides 不再覆盖 main') : s)
+  });
+}
+
+// 33) 未知颜色 key 不再回落到默认色 → colorOf 返回 undefined，
+//     往下读 col.key 直接抛 TypeError，整张图导不出来。
+//     （core.js 里删一个颜色、或老数据里存着已废弃的 key，就是这个场景。）
+{
+  const anchor = "    return palette[key] || palette.blue || { main: '#2f6fed', bg: '#e8effd' };";
+  mutations.push({
+    name: '未知配色 key 不回落（整张图导出直接崩）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '    return palette[key]; // MUTANT') : s)
+  });
+}
+
+// 34) 圆角半径不再被边长一半夹住 → path 自交，画出奇怪形状。
+//     老 WebView 没有 roundRect，路径是手画的，夹取这一步不能少。
+{
+  const anchor = '    var rr = clamp(r || 0, 0, Math.min(w, h) / 2);';
+  mutations.push({
+    name: '圆角半径不再夹到边长一半（path 自交）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '    var rr = r || 0; // MUTANT') : s)
+  });
+}
+
+// 35) 课名只允许一行 —— 退回「数据结…」那种等于没写的截断。
+//     这是真机上第一版样图的真实观感问题（截图里「数据结构与算法分析」只剩三个字），
+//     Node 测试原本也不拦，因为「截断了」和「截断得没法读」都是截断。
+{
+  const anchor = '            : fitName(course.name, innerW, nameSize, measure, roomy ? 2 : 1);';
+  mutations.push({
+    name: '课名只允许一行（退回「数据结…」）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '            : fitName(course.name, innerW, nameSize, measure, 1); // MUTANT')
+      : s)
+  });
+}
+
+// 36) 课名排版不再降档字号 —— 只能靠截断收场。
+//     单列可用宽度只有约 89px，19px 字下就 4 个汉字，「数据结构与算法分析」必然被砍。
+{
+  const anchor = '    var ladder = [baseSize, baseSize - 2, baseSize - 4, 14];';
+  mutations.push({
+    name: '课名排版不降字号（中等长度课名被截断）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    var ladder = [baseSize]; // MUTANT')
+      : s)
+  });
+}
+
+// 37) 折行截断时丢掉本行已排好的字（写成 s.slice(i) 而不是 cur + s.slice(i)）。
+//     这是我在写这个函数时真的差点犯的错：表现出来是**短名字凭空少头一个字**，
+//     而且只在「行数用尽」这条分支上才出现，肉眼扫代码很难发现。
+{
+  const anchor = '          var fitted = fitText(cur + s.slice(i), size, maxWidth, measure);';
+  mutations.push({
+    name: '折行截断丢掉本行已排好的字（名字少头一个字）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '          var fitted = fitText(s.slice(i), size, maxWidth, measure); // MUTANT')
+      : s)
+  });
+}
+
+// 38) 深色主题下课块底色不再压暗 → **白底白字，课名整片看不见**。
+//     这是真机样图上真实出现过的缺陷（浅色页面里点「深色导出」触发），
+//     而所有「结构性」的检查全都通过：尺寸对、指令合法、PNG 完整、色条颜色正确。
+//     只有「数像素 / 比亮度」这种判据拦得住 —— 也正是这条变异存在的理由。
+{
+  const anchor = '          var blockBg = isDark ? blockBgOf(col) : col.bg;';
+  mutations.push({
+    name: '深色主题课块底色不压暗（白底白字，课名看不见）',
+    file: 'share',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '          var blockBg = col.bg; // MUTANT')
+      : s)
+  });
+}
 
 // ==================== 运行 ====================
 

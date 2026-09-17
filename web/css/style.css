@@ -837,6 +837,54 @@ input:focus, select:focus {
   background: var(--panel);
 }
 
+/* ==================== 课表分享图弹窗 ==================== */
+
+/* 分享图是竖图，弹窗给宽一点，预览才看得清课名 */
+.modal-share { max-width: 720px; }
+
+.share-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+/* 分段开关：一组选项包一个外框，否则两个透明按钮并排看不出「一组」 */
+.share-options .seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.share-preview {
+  /* 12 节的课表图很高（1080×1400+），必须限高可滚，
+     否则弹窗被撑到屏幕外，底部的「保存」按钮点不到 */
+  max-height: 52vh;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.share-preview canvas {
+  display: block;
+  max-width: 100%;
+  height: auto; /* 跟着宽度等比缩，不能写死，否则图会被拉扁 */
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.share-preview .share-loading { margin: 24px 0; color: var(--muted); }
+
+.share-hint { flex: 1; color: var(--muted); font-size: 13px; min-width: 0; }
+
 /* ==================== 设置抽屉 ==================== */
 
 .settings-overlay {

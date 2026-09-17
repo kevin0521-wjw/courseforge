@@ -914,3 +914,53 @@ D('设置面板：提前量只能选引擎认得的档位（界面与引擎同�
   });
 });
 
+
+// ---------------------------------------------------------------- 分享图弹窗
+//
+// jsdom 里拿不到 canvas 2D 上下文（除非装 `canvas` 这个原生包，本项目刻意不装），
+// 所以这两条**不是在测出图**——出图由 tests/share-image.test.mjs（布局）与
+// tools/share-image-selftest.mjs（真机像素）负责。
+// 它们测的是「点下去之后应用会不会卡住 / 用户看不看得到反馈」这类接线问题：
+// 出图失败时若直接抛出去，用户看到的是一个点不动的弹窗，而控制台里才有报错。
+
+D('分享图弹窗：打开后必须有可见反馈（画布或可读的错误提示），不能是空白', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    doc.querySelector('[data-action="share-image"]').click();
+    assert.equal(doc.getElementById('shareModal').hidden, false, '点「分享图片」没打开弹窗');
+
+    const host = doc.getElementById('sharePreview');
+    assert.ok(host.childNodes.length > 0,
+      '预览区是空的：用户点了按钮但什么都看不到，会以为是按钮坏了');
+
+    // 无 canvas 环境（jsdom 默认）下必须是**可读文案**，不能静默空白
+    const tip = host.querySelector('.share-loading');
+    if (tip) {
+      assert.match(tip.textContent, /Canvas 2D|生成预览失败|图片模块未加载|还没有课程/,
+        '出图失败时的提示文案读不出原因：' + tip.textContent);
+    }
+  });
+});
+
+D('分享图弹窗：切换范围/配色会同步选中态，关闭后收起', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    doc.querySelector('[data-action="share-image"]').click();
+
+    const all = doc.querySelector('[data-action="share-scope"][data-scope="all"]');
+    const cur = doc.querySelector('[data-action="share-scope"][data-scope="current"]');
+    assert.ok(cur.classList.contains('active'), '默认应当是「只看本周」选中');
+    all.click();
+    assert.ok(all.classList.contains('active'), '点了「全部周次」但按钮没有选中态');
+    assert.ok(!cur.classList.contains('active'), '同一组里的另一个选项应当取消选中');
+
+    const dark = doc.querySelector('[data-action="share-theme"][data-theme="dark"]');
+    dark.click();
+    assert.ok(dark.classList.contains('active'), '点了「深色」但按钮没有选中态');
+    // 再点一次同一个选项不该抛异常（early-return 分支）
+    dark.click();
+
+    doc.querySelector('[data-action="close-share"]').click();
+    assert.equal(doc.getElementById('shareModal').hidden, true, '关闭按钮没把弹窗收起来');
+  });
+});

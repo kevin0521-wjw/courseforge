@@ -12,6 +12,7 @@
   var ST = window.CourseStorage;
   var CI = window.CourseImporter;
   var ICS = window.CourseForgeICS;
+  var SI = window.CourseForgeShare;
   var RM = window.CourseForgeRemind;
 
   if (!CF || !CR || !ST) {
@@ -35,7 +36,11 @@
     editingId: null,    // 弹窗正在编辑的课程 id（null = 新增）
     draftWeeks: [],     // 弹窗当前选中的周次
     draftColor: 'blue', // 弹窗当前选中颜色
-    themeMode: 'system' // 'system' | 'light' | 'dark'
+    themeMode: 'system', // 'system' | 'light' | 'dark'
+    share: {            // 分享图弹窗的选项（不落盘：一次性操作，没必要记）
+      scope: 'current', // 'current' 只看本周 | 'all' 全部周次
+      theme: 'auto'     // 'auto' 跟随应用主题 | 'light' | 'dark'
+    }
   };
 
   /** 取当前学期对象（找不到返回 null） */
@@ -789,6 +794,197 @@
       + (res.truncated ? '（超出上限已截断）' : ''));
   }
 
+  // ==================== 课表分享图 ====================
+
+  /**
+   * 从当前主题的 CSS 变量解析课程配色。
+   *
+   * 为什么不在 JS 里也维护一份深色配色：一定会漂移 —— CSS 改了没人记得改 JS，
+   * 表现就是「深色模式下导出的图还是浅色配色」，而这件事在浅色模式下永远看不到。
+   * 直接读计算样式，配色就只有 CSS 一个来源。
+   * 读不到（老浏览器 / 未挂载）时回落到 core.js 的预设值。
+   */
+  function resolveCssPalette() {
+    var out = {};
+    var colors = (CF && CF.COURSE_COLORS) || [];
+    var styles = null;
+    try { styles = window.getComputedStyle(document.documentElement); } catch (e) { styles = null; }
+    for (var i = 0; i < colors.length; i++) {
+      var key = colors[i].key;
+      var main = colors[i].main;
+      var bg = colors[i].bg;
+      if (styles) {
+        var m = String(styles.getPropertyValue('--c-' + key + '-main') || '').trim();
+        var b = String(styles.getPropertyValue('--c-' + key + '-bg') || '').trim();
+        if (m) main = m;
+        if (b) bg = b;
+      }
+      out[key] = { main: main, bg: bg };
+    }
+    return out;
+  }
+
+  var shareMeasureFn = null;
+
+  /** 量文字宽度的函数只建一次：每次重建 canvas 都会让浏览器分配离屏缓冲 */
+  function shareMeasure() {
+    if (!shareMeasureFn) shareMeasureFn = SI.makeMeasure(document);
+    return shareMeasureFn;
+  }
+
+  /** 分享图实际用的主题（'auto' → 跟随应用当前主题） */
+  function shareTheme() {
+    return state.share.theme === 'auto' ? resolveTheme(state.themeMode) : state.share.theme;
+  }
+
+  /** 只有正在看「本周」且看的确实是真实当前周时，才高亮今天那一列 */
+  function shareToday() {
+    if (state.share.scope !== 'current') return 0;
+    if (state.displayWeek !== realWeek()) return 0;
+    var d = new Date().getDay(); // 0 = 周日
+    return d === 0 ? 7 : d;
+  }
+
+  function currentSemesterName() {
+    var sem = activeSemesterObj();
+    return (sem && sem.name) || '我的课表';
+  }
+
+  function buildShareLayout() {
+    return SI.buildLayout({
+      courses: state.courses,
+      settings: state.settings,
+      semesterName: currentSemesterName(),
+      week: state.displayWeek,
+      scope: state.share.scope,
+      theme: shareTheme(),
+      today: shareToday(),
+      palette: resolveCssPalette(),
+      measure: shareMeasure()
+    });
+  }
+
+  /** 预览区里的提示文案。用 textContent 而不是 innerHTML —— 异常文本不该当 HTML 解析 */
+  function setShareMessage(msg) {
+    var host = document.getElementById('sharePreview');
+    if (!host) return;
+    while (host.firstChild) host.removeChild(host.firstChild);
+    var p = document.createElement('p');
+    p.className = 'share-loading';
+    p.textContent = msg;
+    host.appendChild(p);
+  }
+
+  /** 把选中态同步到按钮上（选项状态与 UI 只有这一处映射，避免两处各写一半） */
+  function syncShareUI() {
+    var groups = [
+      ['share-scope', 'data-scope', state.share.scope],
+      ['share-theme', 'data-theme', state.share.theme]
+    ];
+    for (var g = 0; g < groups.length; g++) {
+      var btns = document.querySelectorAll('[data-action="' + groups[g][0] + '"]');
+      for (var i = 0; i < btns.length; i++) {
+        var v = btns[i].getAttribute(groups[g][1]);
+        if (v === groups[g][2]) btns[i].classList.add('active');
+        else btns[i].classList.remove('active');
+      }
+    }
+  }
+
+  function renderSharePreview() {
+    // 先把选中态同步上去，再做重活。
+    // 反过来写（画完再同步）会有一个小坑：出图失败时提前 return，
+    // 用户点了「全部周次」却看不到按钮选中 —— 像是点了没反应。
+    syncShareUI();
+
+    if (!SI) { setShareMessage('图片模块未加载，请刷新页面重试'); return; }
+    if (!state.courses.length) { setShareMessage('还没有课程，先添加课程或导入课表'); return; }
+
+    var layout, canvas;
+    try {
+      layout = buildShareLayout();
+      canvas = SI.drawToCanvas(layout, document);
+    } catch (e) {
+      setShareMessage('生成预览失败：' + (e && e.message ? e.message : '未知错误'));
+      return;
+    }
+
+    var host = document.getElementById('sharePreview');
+    if (host) {
+      while (host.firstChild) host.removeChild(host.firstChild);
+      host.appendChild(canvas);
+    }
+
+    var hint = document.getElementById('shareHint');
+    if (hint) {
+      hint.textContent = '图片 ' + layout.width + '×' + layout.height
+        + ' · 共 ' + layout.meta.courseCount + ' 门课';
+    }
+  }
+
+  function openShareModal() {
+    var m = document.getElementById('shareModal');
+    if (!m) return;
+    m.hidden = false;
+    renderSharePreview();
+  }
+
+  function closeShareModal() {
+    var m = document.getElementById('shareModal');
+    if (m) m.hidden = true;
+  }
+
+  function onShareScope(el) {
+    var v = el && el.getAttribute('data-scope') === 'all' ? 'all' : 'current';
+    if (v === state.share.scope) return;
+    state.share.scope = v;
+    renderSharePreview();
+  }
+
+  function onShareTheme(el) {
+    var v = (el && el.getAttribute('data-theme')) || 'auto';
+    if (['auto', 'light', 'dark'].indexOf(v) < 0) v = 'auto';
+    if (v === state.share.theme) return;
+    state.share.theme = v;
+    renderSharePreview();
+  }
+
+  function onSaveShare() {
+    if (!SI) { showToast('图片模块未加载，请刷新页面'); return; }
+    if (!state.courses.length) { showToast('还没有课程可分享'); return; }
+
+    var layout;
+    try {
+      layout = buildShareLayout();
+    } catch (e) {
+      showToast('生成图片失败：' + (e && e.message ? e.message : '未知错误'));
+      return;
+    }
+
+    var fileName = SI.suggestFileName(new Date(), currentSemesterName(),
+      layout.meta.scope, layout.meta.week);
+
+    // 生成是同步的，但 toBlob 是异步的 —— 期间禁用按钮，避免连点导出好几份
+    var btn = document.getElementById('btnSaveShare');
+    if (btn) btn.disabled = true;
+
+    SI.exportPNG(layout, { document: document, fileName: fileName }, function (err, res) {
+      if (btn) btn.disabled = false;
+      if (err || !res) {
+        showToast('保存失败：' + ((err && err.message) || '未知错误'));
+        return;
+      }
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(res.blob);
+      a.download = res.fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+      showToast('已生成课表图片（' + layout.width + '×' + layout.height + '），保存到下载目录');
+    });
+  }
+
   // ==================== PWA（可添加到桌面 / 离线可用） ====================
 
   function registerSW() {
@@ -856,6 +1052,12 @@
     'export-json': exportJSON,
     'export-ics': exportICS,
     'print-schedule': function () { window.print(); },
+    // 课表分享图
+    'share-image': openShareModal,
+    'close-share': closeShareModal,
+    'share-scope': onShareScope,
+    'share-theme': onShareTheme,
+    'save-share': onSaveShare,
     'toggle-theme': toggleTheme,
     'import-json': function () { document.getElementById('importFile').click(); },
     'clear-sample': onClearSample,
