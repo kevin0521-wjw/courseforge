@@ -5,10 +5,12 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "pack": "electron-builder --win --dir",
     "dist": "electron-builder --win"
   },
   "devDependencies": {
-    "electron": "^33.4.11"
+    "electron": "^33.4.11",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.kevin0521.courseforge",
@@ -16,9 +18,10 @@
     "directories": {
       "output": "release"
     },
+    "electronDist": "node_modules/electron/dist",
+    "npmRebuild": false,
     "files": [
-      "main.js",
-      "preload.js",
+      "*.js",
       "package.json"
     ],
     "extraResources": [
@@ -28,12 +31,20 @@
       }
     ],
     "win": {
-      "target": ["nsis"]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "artifactName": "CourseForge-${version}-setup.${ext}"
   },
   "license": "MIT"
 }

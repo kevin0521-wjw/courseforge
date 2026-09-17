@@ -27,6 +27,11 @@
  *   node tools/desktop-selftest.mjs
  *   （可用 ELECTRON_PATH 环境变量指定 electron 可执行文件）
  *
+ * 验打包产物：
+ *   PACKAGED_APP=desktop/release/win-unpacked/课表工坊.exe node tools/desktop-selftest.mjs
+ *   打包版与开发版是两条不同的路径（app.isPackaged、resources/web、asar 内的
+ *   preload），只在开发态验过不能推出打包版也能用 —— 必须各跑一遍。
+ *
  * 退出码：0 = 全部检查通过；1 = 失败
  *
  * ⚠️ 需要绕过沙箱运行（要 spawn GUI 进程），例如 dangerouslyDisableSandbox。
@@ -40,13 +45,19 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DESKTOP = path.join(ROOT, 'desktop');
-const ELECTRON = process.env.ELECTRON_PATH
+
+// 打包产物：直接跑 exe，且**不能**再传应用目录参数（那会让它去找开发态的 app）
+const PACKAGED = process.env.PACKAGED_APP
+  ? path.resolve(ROOT, process.env.PACKAGED_APP)
+  : '';
+const ELECTRON = PACKAGED
+  || process.env.ELECTRON_PATH
   || path.join(DESKTOP, 'node_modules', 'electron', 'dist', 'electron.exe');
 const CDP_PORT = 9333 + (process.pid % 200);
 
 if (!fs.existsSync(ELECTRON)) {
   console.error('找不到 Electron：' + ELECTRON);
-  console.error('先在 desktop/ 里执行 npm install');
+  console.error(PACKAGED ? '先执行：cd desktop && npm run pack' : '先在 desktop/ 里执行 npm install');
   process.exit(1);
 }
 
@@ -175,7 +186,8 @@ try {
   delete env.ELECTRON_RUN_AS_NODE;
 
   el = spawn(ELECTRON, [
-    '.',
+    // 打包产物自带应用，不能再传 '.' —— 传了它会把开发目录当成 app
+    ...(PACKAGED ? [] : ['.']),
     '--remote-debugging-port=' + CDP_PORT,
     // 默认走「产品默认配置」—— 这才是用户双击时的真实路径，自检要验的就是它。
     // 受限环境（无 GPU / 容器 / 自动化沙箱）起不来时，再用产品自带安全模式重试：
@@ -216,14 +228,30 @@ try {
   const info = JSON.parse(r.result.value);
 
   // ==================== 断言 ====================
+  // 计数交给 check 自己做：以前汇总里的 total 是手算的（5 + bads.length + 11），
+  // 加一条检查就得同步改一次，迟早会对不上而给出错误的「共 N 项」。
+  let checked = 0;
   const check = (name, ok, detail) => {
+    checked++;
     console.log((ok ? '  ✅ ' : '  ❌ ') + name + (detail ? '   ' + detail : ''));
     if (!ok) failures.push(name);
   };
 
-  console.log('=== 1. 进程与页面 ===');
+  console.log('=== 0. 模式 ===');
+  console.log('  ' + (PACKAGED
+    ? '打包产物：' + path.relative(ROOT, ELECTRON)
+    : '开发态：' + path.relative(ROOT, ELECTRON) + '（应用目录 .）'));
+
+  console.log('\n=== 1. 进程与页面 ===');
   check('主进程仍存活（不是崩溃后的孤儿渲染进程）', el.exitCode === null && el.signalCode === null);
   check('加载的是本地 web/index.html', /\/web\/index\.html$/.test(info.url), info.url.replace(/^file:\/\/\//, ''));
+  if (PACKAGED) {
+    // 打包版必须从 resources/web 读页面。若这里仍指向源码目录，
+    // 说明收到的是「开发态跑通了」的假阳性 —— 最容易被当成打包成功。
+    check('页面确实来自安装包内的 resources/web',
+      /[\\/]release[\\/][^\\/]+[\\/]resources[\\/]web[\\/]index\.html$/.test(decodeURIComponent(info.url)),
+      decodeURIComponent(info.url).replace(/^file:\/\/\//, ''));
+  }
   check('页面已渲染出内容', info.dom.bodyTextLen > 100, '正文 ' + info.dom.bodyTextLen + ' 字符');
   check('交互元素已就位', info.dom.actionEls > 20, info.dom.actionEls + ' 个 data-action / ' + info.dom.buttons + ' 个按钮');
 
@@ -274,9 +302,8 @@ try {
   check('localStorage 可读写', info.localStorage === true);
 
   console.log('\n--- 汇总 ---');
-  const total = 5 + bads.length + 11;
   console.log((failures.length === 0 ? '✅ 全部通过' : '❌ 失败 ' + failures.length + ' 项')
-    + '（共 ' + total + ' 项检查）');
+    + '（共 ' + checked + ' 项检查，模式：' + (PACKAGED ? '打包产物' : '开发态') + '）');
   if (failures.length) console.log('失败项：\n  - ' + failures.join('\n  - '));
 } catch (e) {
   console.error('自检失败：' + (e && e.message));
@@ -299,9 +326,13 @@ try {
       }
     } catch { /* 已退出 */ }
   }
-  // Electron 的渲染进程有时不在主进程的进程树里，兜底按镜像名收一遍
+  // Electron 的渲染进程有时不在主进程的进程树里，兜底按镜像名收一遍。
+  // ⚠️ 镜像名不能写死 electron.exe：打包产物叫「课表工坊.exe」，
+  //    写死会漏杀，留下占着 resources/app.asar 的孤儿进程 ——
+  //    症状是下一次打包报 EBUSY，很难联想到是自检没收干净。
   if (process.platform === 'win32') {
-    try { spawnSync('taskkill', ['/F', '/IM', 'electron.exe'], { stdio: 'ignore' }); } catch { /* 忽略 */ }
+    const imgName = path.basename(ELECTRON);
+    try { spawnSync('taskkill', ['/F', '/IM', imgName], { stdio: 'ignore' }); } catch { /* 忽略 */ }
   }
   try { if (profile) fs.rmSync(profile, { recursive: true, force: true }); } catch { /* 锁着就留给系统 */ }
   console.log('已清理临时 user-data-dir');

@@ -1,6 +1,9 @@
 # 依赖
 node_modules/
-desktop/release/
+# 用通配是为了覆盖 release/ 以及受限沙箱下换名重打包产生的 release-2/ release-nsis/ 等；
+# 只写 desktop/release/ 的话，安装包（几十 MB）会被 git add -A 一并收进去。
+# 末尾不加斜杠：路径还不存在时 git 不知道它是目录，带斜杠的模式会匹配不上。
+desktop/release*
 
 # 构建产物
 dist/

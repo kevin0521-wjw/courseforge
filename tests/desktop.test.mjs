@@ -210,3 +210,89 @@ test('preload.js：不把 ipcRenderer 整个暴露给页面', async () => {
     'edu:grab', 'edu:login', 'edu:open'
   ], '暴露的通道清单变化必须是有意为之：每多一个通道就多一个被页面调用的入口');
 });
+
+// ==================== 打包配置与主进程的一致性 ====================
+//
+// 为什么要有这几条：
+//  打包配置的 files 白名单和主进程的 require 是两处各自独立的清单。
+//  加了新模块却忘了改白名单 —— 开发态一切正常，打包后才在启动那一刻
+//  报 Cannot find module。这类错「打包成功」是看不出来的（构建产物照样生成），
+//  只能靠断言锁住。少一个文件不会让构建失败，只会让用户装完打不开。
+
+const DESKTOP_PKG = JSON.parse(
+  await readFile(fileURLToPath(new URL('../desktop/package.json', import.meta.url)), 'utf-8'));
+
+const _preloadForPack = await readFile(
+  fileURLToPath(new URL('../desktop/preload.js', import.meta.url)), 'utf-8');
+
+const BUILD = DESKTOP_PKG.build || {};
+const FILE_PATTERNS = BUILD.files || ['**/*'];
+
+/** electron-builder 的 files 是 glob；这里只实现本项目会用到的 `*` / `**` / `!` 前缀 */
+function globRe(pat) {
+  const esc = pat.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const body = esc.replace(/\*\*/g, '\u0001').replace(/\*/g, '[^/]*').replace(/\u0001/g, '.*');
+  return new RegExp('^' + body + '$');
+}
+
+function isPacked(rel) {
+  const inc = FILE_PATTERNS.filter((p) => !p.startsWith('!'));
+  const exc = FILE_PATTERNS.filter((p) => p.startsWith('!')).map((p) => p.slice(1));
+  if (exc.some((p) => globRe(p).test(rel))) return false;
+  return inc.some((p) => globRe(p).test(rel));
+}
+
+/** 取出源码里所有「相对 require」的目标，统一成 `a/b.js` 形式（包名不算） */
+function localRequires(src) {
+  const out = new Set();
+  for (const m of src.matchAll(/require\(\s*'(\.[^']+)'\s*\)/g)) {
+    let p = m[1].replace(/^\.\//, '');
+    if (!/\.[a-z]+$/i.test(p)) p += '.js';
+    out.add(p);
+  }
+  return [...out];
+}
+
+test('打包白名单必须覆盖主进程的每一个本地依赖', () => {
+  const deps = [...new Set([...localRequires(MAIN_SRC), ...localRequires(_preloadForPack)])];
+  assert.ok(deps.length >= 2, '至少应识别出 edu-login.js 与 cred-store.js 两个本地依赖，实际：'
+    + JSON.stringify(deps));
+  for (const d of deps) {
+    assert.ok(isPacked(d),
+      '打包白名单漏了 ' + d + '：构建仍会成功，但装完启动就报 Cannot find module');
+  }
+});
+
+test('打包入口与 package.json 必须在白名单内', () => {
+  assert.ok(isPacked(DESKTOP_PKG.main), 'main 字段指向的入口必须被打包：' + DESKTOP_PKG.main);
+  assert.ok(isPacked('package.json'), 'package.json 必须被打包 —— Electron 靠它找 main');
+  assert.equal(DESKTOP_PKG.main, 'main.js');
+});
+
+test('extraResources 的落点必须和 main.js 读的路径一致', () => {
+  const res = BUILD.extraResources || [];
+  const web = res.find((r) => r && typeof r === 'object' && r.to && /web$/.test(String(r.from || '')));
+  assert.ok(web, '应有把 web/ 带进包的 extraResources 配置');
+
+  // 不硬编码 'web'：改成别的名字也行，但必须和主进程读的路径一起改。
+  // 这条断言锁的是「两处一致」，不是「必须叫 web」。
+  const expected = new RegExp("path\\.join\\(process\\.resourcesPath,\\s*'" + web.to + "'\\)");
+  assert.ok(expected.test(MAIN_SRC),
+    '打包态必须用 process.resourcesPath 拼 ' + web.to + '/，否则页面路径会飘到包外面');
+  assert.ok(/app\.isPackaged/.test(MAIN_SRC), '必须按 app.isPackaged 区分开发态与打包态两条路径');
+});
+
+test('打包只出 x64，并复用本地 Electron（不再多下一份 100MB+）', () => {
+  const flat = JSON.stringify((BUILD.win && BUILD.win.target) || '');
+  assert.ok(/x64/.test(flat), '应显式指定 x64 目标');
+  assert.ok(!/ia32/.test(flat), '不要顺带出 ia32 —— 那会另外下载一份 Electron');
+  assert.ok(BUILD.electronDist, '必须设置 electronDist 复用已装好的 Electron');
+  assert.ok(/node_modules[\\/]electron[\\/]dist/.test(BUILD.electronDist),
+    'electronDist 应指向本地 electron 发行版：' + BUILD.electronDist);
+});
+
+test('安装包文件名不含中文（避开命令行与下载环节的编码坑）', () => {
+  const name = BUILD.artifactName || '';
+  if (!name) return; // 没配时 electron-builder 会用 productName，中文就会进文件名
+  assert.ok(/^[\x20-\x7e]+$/.test(name), 'artifactName 必须是纯 ASCII：' + name);
+});

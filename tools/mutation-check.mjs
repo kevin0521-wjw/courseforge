@@ -34,6 +34,7 @@ const FILES = {
   eduHtml: path.join(ROOT, 'web/js/edu-html.js'),
   eduLogin: path.join(ROOT, 'desktop/edu-login.js'),
   credStore: path.join(ROOT, 'desktop/cred-store.js'),
+  desktopPkg: path.join(ROOT, 'desktop/package.json'),
   sw: path.join(ROOT, 'web/sw.js'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
@@ -369,6 +370,22 @@ const ONLY = process.env.MUT_ONLY !== undefined ? Number(process.env.MUT_ONLY) :
       const anchor = "    if (!available()) return { ok: false, reason: 'noenc' };";
       if (!s.includes(anchor)) return s;
       return s.replace(anchor, '    if (!available()) return { ok: true }; // MUTANT');
+    }
+  });
+}
+
+// ==================== 打包配置 ====================
+
+// 22) 打包白名单从「*.js」改成显式枚举，且漏掉新模块。
+//     这是本项目真实踩过的坑：构建照样成功、产物照样生成，
+//     装完点图标才报 Cannot find module —— 只有断言能拦住。
+{
+  mutations.push({
+    name: '打包白名单改成显式枚举并漏掉模块（构建仍会成功）',
+    file: 'desktopPkg',
+    apply: (s) => {
+      if (!s.includes('"*.js"')) return s;
+      return s.replace('"*.js"', '"main.js",\n      "preload.js"');
     }
   });
 }

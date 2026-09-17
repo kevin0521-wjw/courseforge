@@ -26,7 +26,7 @@
 - 📤 **一键备份恢复**：导出 JSON 备份、导入恢复，换设备迁移只需一个文件
 - 📱 **移动端适配**：手机浏览器打开即可使用；触屏点击区 ≥ 44px、输入字号 ≥ 16px
 - 📲 **PWA**：可添加到手机主屏幕当 App 用，Service Worker 离线缓存，断网可打开
-- 🧪 **自带测试**：341 项 `node --test` 测试（含 jsdom 全流程），CI 自动跑
+- 🧪 **自带测试**：346 项 `node --test` 测试（含 jsdom 全流程），CI 自动跑
 
 ## 🖼 界面预览
 
@@ -140,8 +140,37 @@ npx electron . --safe-mode            # 或设环境变量 COURSEFORGE_SAFE_MODE
 
 ```bash
 cd desktop
-npm install --save-dev electron-builder
-npx electron-builder --win    # 生成 Windows 安装包（-mac / -linux 同理）
+npm install            # 依赖里已含 electron-builder
+npm run pack           # 快速验证：只出免安装目录 release/win-unpacked（不下载 NSIS）
+npm run dist           # 出安装包 release/CourseForge-<版本>-setup.exe
+```
+
+打完**必须回来验产物** —— 「构建成功」这句话本身没有信息量：
+
+```bash
+npm run check:package  # 解开 app.asar 核对模块是否齐全、resources/web 是否带上
+```
+
+> **`--dir` 成功 ≠ 安装包能装。** `files` 白名单漏一个模块时，构建照样成功、exe 照样生成、
+> 体积也正常，但用户装完双击就是 `Cannot find module`。`check:package` 就是拦这个的，
+> 它还会核对产物的 `js/` 清单与源码是否一致，避免拿到旧产物误判成成功。
+
+> **复用本地 Electron**：配置里设了 `electronDist`，直接拿 `node_modules/electron/dist` 打包，
+> 不再去 GitHub 下载一份 100MB+ 的 Electron。
+
+**下载 NSIS 组件超时**：electron-builder 要从 GitHub 取 NSIS / 7-Zip 组件，国内常见
+`connect ETIMEDOUT`（`github.com` 被阻断时尤其明显）。换国内镜像即可：
+
+```bash
+ELECTRON_BUILDER_BINARIES_MIRROR=https://registry.npmmirror.com/-/binary/electron-builder-binaries/ \
+  npm run dist
+```
+
+**受限沙箱里重复打包失败**：electron-builder 每次会清空输出目录，文件数超过 50 时
+会被沙箱的批量删除策略拦下（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）。换个输出目录绕开：
+
+```bash
+npm run dist -- -c.directories.output=release-2
 ```
 
 ## 📦 数据与备份
@@ -188,11 +217,12 @@ courseforge/
 │   ├── build-standalone.mjs#   单文件打包
 │   ├── check-dom.mjs       #   DOM / data-action / CSS 静态检查
 │   ├── mutation-check.mjs  #   变异测试：故意改坏代码，确认断言真的会变红
-│   └── browser-selftest.mjs#   真机自检：headless 浏览器 + CDP 跑真实 PDF 导入链路
-│   └── desktop-selftest.mjs#   桌面端自检：真启动 Electron，用 CDP 验证 preload / IPC / 安全边界
+│   ├── browser-selftest.mjs#   真机自检：headless 浏览器 + CDP 跑真实 PDF 导入链路
+│   ├── desktop-selftest.mjs#   桌面端自检：真启动 Electron，用 CDP 验证 preload / IPC / 安全边界
+│   └── verify-package.mjs  #   打包产物校验：解 asar 头核对模块齐全、resources/web 与源码一致
 ├── docs/PROMPTS.md         # 🤖 AI 开发提示词手册（用 AI 继续迭代本项目必读）
 ├── docs/COMPARISON.md      # 📊 竞品对比与优化清单（功能矩阵 / 差异化定位 / 缺口优先级）
-└── .github/workflows/      # CI：push 时跑测试 + 静态检查 + 变异测试 + 打包冒烟
+└── .github/workflows/      # CI：push 时跑测试 + 静态检查 + 变异测试 + 打包冒烟（不含出安装包，太重）
 ```
 
 ## 🖨 打印与日历导出
@@ -229,20 +259,28 @@ npm run check:dom        # 静态检查：DOM id / data-action 接线 / CSS 结�
 npm run check:mutation   # 变异测试：故意改坏被测代码，确认断言真的会变红
 npm run check:browser    # 真机自检：headless Edge + CDP 跑一遍真实 PDF 导入链路
 npm run check:desktop    # 桌面端自检：真启动 Electron，验证 preload 注入 / IPC 往返 / 安全边界
+npm run check:package    # 打包产物校验：解 asar 核对模块与 resources/web（未打包时自动跳过）
 npm run build:standalone # 生成 dist/CourseForge-standalone.html 单文件版
-npm run verify           # 测试 + 静态检查 + 变异测试 + 打包冒烟，一条命令跑完
+npm run pack:desktop     # 打包桌面端（免安装目录）
+npm run dist:desktop     # 打包桌面端（NSIS 安装包）
+npm run verify           # 测试 + 静态检查 + 变异测试 + 打包冒烟 + 产物校验，一条命令跑完
 ```
 
 > `check:browser` / `check:desktop` 不在 `verify` 里：它们要真实网络与图形环境
 > （会拉起浏览器 / Electron），不适合当默认门禁，按需手动跑。
+> `check:package` 在 `verify` 里，但**未打包时只打印一行提示并跳过**，不会在 CI 里造假失败。
 > `check:browser` 补的是 Node 测试覆盖不到的那一段 —— 同源相对路径取 CMap、
 > pdf.js worker 加载、各镜像在真实网络下的可达性（缺浏览器可用 `EDGE_PATH` 指定）；
 > `check:desktop` 则验证静态检查做不到的部分 —— preload 是否真的注入了
 > `window.CourseForgeDesktop`、`edu:*` IPC 是否真的能往返、以及 `sanitizeUrl`
-> 在真实调用链上是否真的拦得住 `javascript:` / `file://` 这类协议（16 项断言；
+> 在真实调用链上是否真的拦得住 `javascript:` / `file://` 这类协议（21 项断言；
 > 需先在 `desktop/` 里 `npm install`）。它默认用**产品默认配置**启动（即用户双击
 > 时的真实路径）；无 GPU / 容器等受限环境起不来时，加 `SAFE_MODE=1` 走安全模式重试：
 > `SAFE_MODE=1 npm run check:desktop`。
+>
+> 自检还能直接验**打包产物**（打包版走的是 `app.isPackaged` + `resources/web` +
+> asar 内 preload，与开发态完全是两条路径，只验一条推不出另一条）：
+> `PACKAGED_APP=desktop/release/win-unpacked/课表工坊.exe npm run check:desktop`。
 
 > **运行时零依赖，依赖只在测试层**：`jsdom` 仅用于驱动真实 `index.html` 跑全流程测试，未安装时这些用例自动跳过（不阻断）。交付产物（网页版 / 单文件版 / 桌面端）不依赖任何 npm 包。
 
