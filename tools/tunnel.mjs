@@ -8,15 +8,23 @@
  *
  * 用本机已装的 cpolar（免费版给 https 子域名，正好够真机联调用）。
  *
+ * ⚠️ 这个地址是**临时的**，别当稳定入口用（这是免费版的硬限制，不是 bug）：
+ *   1) 隧道是「进程级」的 —— 脚本一退出隧道即销毁，地址立刻 404；
+ *   2) 域名每次都变 —— 实测同一账号连续三次分别是
+ *      4d26f25b.r19.cpolar.top / 39f45af8.r16.vip.cpolar.cn / 1041e15f.r19.cpolar.top
+ *      （节点 r19 / r16 与域名都在变），存书签必然失效；
+ *   3) 想固定域名得付费 —— 试过 `cpolar http 5173 -subdomain=courseforge`，服务端直接拒绝：
+ *      「授权失败，用户当前Plan不允许使用该功能，请升级Plan」。
+ *
+ * → 要「长期稳定、可以发给别人」的地址，请用已部署的线上站点；
+ *   本脚本的定位是「本地改完、手机立刻看到」，改一次看一次。
+ *
  * 用法：
  *   npm run tunnel                 # 自动起本地服务 + 建隧道（一条命令搞定）
  *   npm run tunnel -- --no-server  # 本地服务已在跑，只建隧道
  *   PORT=8080 npm run tunnel       # 换端口（默认 5173，与 npm run start:web 一致）
  *
  * Ctrl+C 退出，隧道随之关闭。
- * 注意：免费版分到的域名**不固定** —— 实测同一账号连续两次分别是
- * 4d26f25b.r19.cpolar.top 和 39f45af8.r16.vip.cpolar.cn（节点和域名都会变），
- * 所以每次启动都要看输出的地址，别存书签。
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -98,6 +106,64 @@ function extractPublicUrls(text) {
 
   // https 排前面：测 PWA 必须用它
   return [...urls].sort((a, b) => (b.startsWith('https') ? 1 : 0) - (a.startsWith('https') ? 1 : 0));
+}
+
+function now() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+/** 把公网地址塞进剪贴板 —— 不然手机上还得手打一长串随机域名。 */
+function copyToClipboard(text) {
+  const cmd = process.platform === 'win32' ? 'clip'
+    : process.platform === 'darwin' ? 'pbcopy'
+      : 'xclip';
+  const args = cmd === 'xclip' ? ['-selection', 'clipboard'] : [];
+  try {
+    return spawnSync(cmd, args, { input: text, stdio: ['pipe', 'ignore', 'ignore'] }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 隧道存活巡检。
+ * 为什么要它：地址失效有两种情况 ——
+ *   ① 脚本退出了（用户自己清楚）；② **脚本还在跑，但隧道被服务端回收 / 换网后连不通了**，
+ *      这时用户完全无感，只会觉得"地址又莫名其妙失效了"，然后来找我。
+ * 用一个小文件探活（不探 index.html：那个 17KB，长期跑白耗免费版流量）；
+ * 连续 2 次失败才告警，避开网络抖动误报；恢复时也报一声。
+ */
+function startHealthCheck(url) {
+  const PROBE = url + '/manifest.webmanifest';
+  let fails = 0;
+  let warned = false;
+  const tick = async () => {
+    let ok = false;
+    try {
+      ok = (await fetch(PROBE, { signal: AbortSignal.timeout(12000) })).ok;
+    } catch { ok = false; }
+
+    if (ok) {
+      if (warned) {
+        console.log('[' + now() + '] ✓ 隧道已恢复可达');
+        warned = false;
+      }
+      fails = 0;
+      return;
+    }
+    fails += 1;
+    if (fails >= 2 && !warned) {
+      warned = true;
+      console.log('');
+      console.log('[' + now() + '] ⚠️ 公网地址连续 ' + fails + ' 次不可达：' + url);
+      console.log('    本地服务仍在跑，多半是隧道被回收或网络出口变了 —— 这个地址已经作废。');
+      console.log('    处理：Ctrl+C 停掉，重跑 npm run tunnel 会拿到一个新地址。');
+      console.log('');
+    }
+  };
+  setInterval(tick, 120000);
 }
 
 /** Windows 上必须杀进程树，否则 cpolar / serve 会留孤儿进程。 */
@@ -185,12 +251,26 @@ const urls = await new Promise((resolve, reject) => {
   process.exit(1);
 });
 
+const httpsUrl = urls.find((u) => /^https:/.test(u));
+
 console.log('');
 console.log('✅ 隧道已建立');
 for (const u of urls) console.log('   公网地址   ' + u + (/^https:/.test(u) ? '' : '   （用 https 那个才能测 PWA）'));
 console.log('   本地地址   ' + LOCAL);
+if (httpsUrl) {
+  console.log('   ' + (copyToClipboard(httpsUrl)
+    ? '📋 https 地址已复制到剪贴板，直接粘到手机上'
+    : '（剪贴板不可用，请手动复制上面的 https 地址）'));
+}
 console.log('');
-console.log('  手机直接打开上面的 https 地址即可 —— 不用连同一个 WiFi。');
-console.log('  测 PWA：浏览器菜单 →「添加到主屏幕」。');
-console.log('  Ctrl+C 停止。');
+console.log('   ⚠️ 这个地址只在「本脚本运行期间」有效 —— Ctrl+C 后隧道立即销毁、再打开就是 404；');
+console.log('      且免费版下次会分到**另一个域名**（固定域名需升级 cpolar Plan）。');
+console.log('      → 要长期可用 / 能发给别人的地址，请用已部署的线上站点；这里只负责「改完即看」。');
 console.log('');
+console.log('   手机直接打开上面的 https 地址即可 —— 不用连同一个 WiFi。');
+console.log('   测 PWA：浏览器菜单 →「添加到主屏幕」。');
+console.log('   隧道掉线会自动检测告警（每 2 分钟巡检一次）。');
+console.log('   Ctrl+C 停止。');
+console.log('');
+
+startHealthCheck(httpsUrl || urls[0]);
