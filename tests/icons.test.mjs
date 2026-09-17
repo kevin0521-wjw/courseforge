@@ -236,6 +236,35 @@ test('SW 预缓存覆盖 index.html 与 manifest 引用的所有图标', () => {
     '下面的图标被页面/manifest 引用，却没进 SW 预缓存 —— 离线安装 PWA 时会请求失败：\n  ' + missing.join('\n  '));
 });
 
+test('换行风格不影响哈希 —— CRLF 检出的仓库不能误红', () => {
+  const buf = (s) => Buffer.from(s, 'binary');
+
+  // ① 纯逻辑：同一份内容的两种换行风格必须算出同一个哈希
+  assert.equal(
+    svgHash(buf('a\r\nb\r\nc\r\n')),
+    svgHash(buf('a\nb\nc\n')),
+    'CRLF 与 LF 算出了不同哈希 —— 说明哈希没有归一换行，' +
+    '别人在 Windows 上刚克隆就会误报「icon.svg 已改动」，而 CI（Linux）却是绿的'
+  );
+
+  // ② 真实文件：无论当前磁盘上是什么换行（Windows 检出是 CRLF），锁都必须对得上。
+  //    这一步才是真正防误红的地方 —— 它直接拿现在这份文件去比。
+  const lock = JSON.parse(fs.readFileSync(path.join(WEB, 'icons.lock.json'), 'utf-8'));
+  const real = fs.readFileSync(path.join(WEB, 'icon.svg'));
+  assert.equal(svgHash(real), lock.sha256,
+    `磁盘上的 icon.svg 对不上锁文件（当前 CRLF 个数 = ${(real.toString('binary').match(/\r\n/g) || []).length}）。` +
+    '要么内容真的变了（重跑 make-icons.py），要么哈希没有归一换行');
+
+  // ③ 再显式构造一份 CRLF 版本走一遍完整判定，避免 ② 因为「当前恰好是 LF」而空转。
+  //    注意构造要从 **先归一到 LF** 再转换，否则在 CRLF 的机器上会得到 \r\r\n ——
+  //    这条测试自己就会误红（第一版就是这么写的，实测踩到过）。
+  const lf = real.toString('binary').replace(/\r\n/g, '\n');
+  const asCrlf = lf.replace(/\n/g, '\r\n');
+  assert.ok(asCrlf.length > lf.length, '夹具本身要成立：CRLF 版本应当更长');
+  assert.equal(lockProblem(lock, svgHash(buf(asCrlf))), null,
+    '构造出的 CRLF 版本通不过锁校验');
+});
+
 test('桌面端 .ico 至少含 256 尺寸，且 electron-builder 配置指向它', () => {
   assert.ok(fs.existsSync(ICO), '缺少 desktop/build/icon.ico（跑 python tools/make-icons.py）');
   const parsed = icoSizes(fs.readFileSync(ICO));
@@ -255,12 +284,11 @@ test('桌面端 .ico 至少含 256 尺寸，且 electron-builder 配置指向它
 });
 
 test('改了 icon.svg 就必须重新生成位图（锁文件护栏）', () => {
-  const svg = fs.readFileSync(path.join(WEB, 'icon.svg'));
   const lockFile = path.join(WEB, 'icons.lock.json');
   assert.ok(fs.existsSync(lockFile),
     '缺少 web/icons.lock.json（跑 python tools/make-icons.py 生成）');
 
-  const hash = crypto.createHash('sha256').update(svg).digest('hex');
+  const hash = svgHash(fs.readFileSync(path.join(WEB, 'icon.svg')));
   const lock = JSON.parse(fs.readFileSync(lockFile, 'utf-8'));
   const problem = lockProblem(lock, hash);
 
@@ -273,6 +301,19 @@ test('改了 icon.svg 就必须重新生成位图（锁文件护栏）', () => {
   assert.ok(lockProblem(lock, hash.replace(/^./, hash[0] === '0' ? '1' : '0')),
     'hash 变了却仍判定为一致，说明这条护栏是假的（恒真）');
 });
+
+/**
+ * icon.svg 的哈希，**先把 CRLF 归一成 LF**。
+ *
+ * 必须归一：本机 `core.autocrlf=true` 且仓库没有 .gitattributes，同一份文件
+ * 在 Windows 检出是 CRLF、在 Linux（CI）检出是 LF。直接对原始字节取哈希的话，
+ * 别人在 Windows 上刚克隆就报「icon.svg 已改动」→ 误红，而 CI 却是绿的。
+ * 用 CRLF 的编辑器改一下 SVG 也会踩同样的坑。
+ * 注意：tools/make-icons.py 的 _sha256 用的是同一套归一规则，改这里要同步改那边。
+ */
+function svgHash(buf) {
+  return crypto.createHash('sha256').update(buf.toString('binary').replace(/\r\n/g, '\n'), 'binary').digest('hex');
+}
 
 /** 比对锁与当前哈希；一致返回 null，否则返回给用户看的问题描述 */
 function lockProblem(lock, actualHash) {

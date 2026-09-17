@@ -317,7 +317,18 @@ def main(argv=None):
 
 
 def _sha256(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """对 icon.svg 取哈希，**先把 CRLF 归一成 LF**。
+
+    为什么必须归一：本机 core.autocrlf=true 且仓库没有 .gitattributes，
+    所以同样一份文件在 Windows 检出是 CRLF、在 Linux（CI）检出是 LF。
+    直接对原始字节取哈希的话，Windows 上刚克隆的仓库会立刻报
+    「icon.svg 已改动，但图标没重新生成」—— 而 CI 全绿，
+    是最难查的那种不一致。用 CRLF 的编辑器改一下 SVG 同样会误报。
+    归一之后哈希只反映内容，与换行风格无关。
+    注意：tests/icons.test.mjs 用的是同一套归一规则，改这里要同步改那边。
+    """
+    data = path.read_bytes().replace(b'\r\n', b'\n')
+    return hashlib.sha256(data).hexdigest()
 
 
 def _describe(path, img):
