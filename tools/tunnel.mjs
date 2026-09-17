@@ -156,10 +156,15 @@ function startHealthCheck(url) {
     fails += 1;
     if (fails >= 2 && !warned) {
       warned = true;
+      // 顺手探一下本地服务再下结论 —— 实测踩过：这里原本写死「本地服务仍在跑」，
+      // 但真实场景里后端自己也可能是挂的那个，文案就会指错修复方向，用户白折腾。
+      const localAlive = await probe();
       console.log('');
       console.log('[' + now() + '] ⚠️ 公网地址连续 ' + fails + ' 次不可达：' + url);
-      console.log('    本地服务仍在跑，多半是隧道被回收或网络出口变了 —— 这个地址已经作废。');
-      console.log('    处理：Ctrl+C 停掉，重跑 npm run tunnel 会拿到一个新地址。');
+      console.log(localAlive
+        ? '    本地服务正常（' + LOCAL + '），断的是隧道侧 —— 多半被回收或网络出口变了。'
+        : '    本地服务也没响应（' + LOCAL + '）—— 是后端挂了，不只是隧道。');
+      console.log('    处理：Ctrl+C 停掉，重跑 npm run tunnel 会重新拉起服务并分配新地址。');
       console.log('');
     }
   };
