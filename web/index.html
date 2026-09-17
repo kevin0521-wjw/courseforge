@@ -7,8 +7,13 @@
   <title>课表工坊 CourseForge</title>
   <meta name="theme-color" content="#2f6fed">
   <link rel="manifest" href="manifest.webmanifest">
+  <!-- SVG 优先（矢量、任意分辨率都清晰），PNG 兜底 -->
   <link rel="icon" href="icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="icon" href="icon-192.png" type="image/png" sizes="192x192">
+  <!-- ⚠️ apple-touch-icon 必须是 PNG：iOS 不认 SVG，
+       挂 SVG 会让「添加到主屏幕」拿不到图标（页面装上了，图标是空白）。
+       icon-*.png 由 tools/make-icons.py 从 icon.svg 生成，别手工改。 -->
+  <link rel="apple-touch-icon" href="icon-180.png" sizes="180x180">
   <link rel="stylesheet" href="css/style.css">
   <script>
     // 主题预设：在首屏渲染前应用，避免深色模式闪白

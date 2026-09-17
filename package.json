@@ -11,6 +11,8 @@
     "check:package": "node tools/verify-package.mjs",
     "verify": "node --test && node tools/check-dom.mjs && node tools/mutation-check.mjs && node tools/build-standalone.mjs && node tools/verify-package.mjs",
     "build:standalone": "node tools/build-standalone.mjs",
+    "icons": "python tools/make-icons.py",
+    "icons:check": "python tools/make-icons.py --check",
     "pack:desktop": "cd desktop && npm run pack",
     "dist:desktop": "cd desktop && npm run dist",
     "start:web": "node tools/serve.mjs",

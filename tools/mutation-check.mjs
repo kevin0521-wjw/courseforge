@@ -36,6 +36,8 @@ const FILES = {
   credStore: path.join(ROOT, 'desktop/cred-store.js'),
   desktopPkg: path.join(ROOT, 'desktop/package.json'),
   sw: path.join(ROOT, 'web/sw.js'),
+  standalone: path.join(ROOT, 'tools/build-standalone.mjs'),
+  indexHtml: path.join(ROOT, 'web/index.html'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
 const FIXTURE = 'tests/fixtures/cjk-timetable-rotated.pdf';
@@ -389,6 +391,70 @@ const ONLY = process.env.MUT_ONLY !== undefined ? Number(process.env.MUT_ONLY) :
     }
   });
 }
+
+// ==================== 单文件版构建（tools/build-standalone.mjs）====================
+
+// 23) 剥离 <link rel="icon"> 时去掉 g 标志。
+//     这是**真实发生过的 bug**：当初 icon 只有一行 SVG，不带 g 也看不出问题；
+//     后来给 iOS 补了 PNG 兜底那一行，第二个 <link rel="icon"> 就留在了产物里，
+//     指向一个相对于单文件 HTML 并不存在的路径（双击打开会 404）。
+//     注意这里必须锚在整条语句上：文件注释里也出现了 <link rel="icon"> 字样，
+//     只锚标签会改到注释上，变异就变成了空操作。
+{
+  const anchor = 'out = out.replace(/^\\s*<link rel="icon"[^>]*>\\s*$/gm, \'\');';
+  mutations.push({
+    name: '单文件版剥离 icon 时漏掉 g 标志（只删第一个，剩下的残留成坏引用）',
+    file: 'standalone',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, anchor.replace('$/gm', '$/m') + ' // MUTANT')
+      : s)
+  });
+}
+
+// 24) 上面的 bug 再叠加「末尾自检失效」—— 也就是**当初那个 bug 的真实形态**：
+//     剥离逻辑坏了，而构建期自检又查不到（旧版只枚举 stylesheet/script/manifest）。
+//     这时构建会「成功」并产出坏文件，唯一还能拦住它的就是 tests/standalone.test.mjs。
+//
+//     ⚠️ 单独禁用自检（不叠加 23）是**等价变异**：剥离逻辑本身是对的，
+//        关掉一个查不出问题的检查不会产生任何可观测差异。所以这里必须两处一起改，
+//        否则它会以「假护栏」的名义被误报（我第一版就是这么写错的）。
+//     这条变异与 23 的分工：23 证明构建期自检有效，24 证明测试层**独立**有效。
+{
+  const strip = 'out = out.replace(/^\\s*<link rel="icon"[^>]*>\\s*$/gm, \'\');';
+  const guard = 'if (dangling.length) {';
+  mutations.push({
+    name: '剥离逻辑漏 g + 自检失效（构建会成功，只剩测试能拦）',
+    file: 'standalone',
+    apply: (s) => {
+      if (!s.includes(strip) || !s.includes(guard)) return s;
+      return s
+        .replace(strip, strip.replace('$/gm', '$/m'))
+        .replace(guard, 'if (false && dangling.length) { // MUTANT');
+    }
+  });
+}
+
+// ==================== 图标（web/index.html + 产物）====================
+
+// 25) apple-touch-icon 换回 SVG —— **这是真实存在过的缺陷**。
+//     iOS 的 apple-touch-icon 只认 PNG，挂 SVG 会让「添加到主屏幕」拿不到图标：
+//     页面装得上，图标是空白，而且在桌面浏览器里完全看不出来（桌面读的是
+//     <link rel="icon">）。只有断言能拦。
+{
+  const anchor = 'href="icon-180.png" sizes="180x180"';
+  mutations.push({
+    name: 'apple-touch-icon 换成 SVG（iOS 上主屏图标会空白）',
+    file: 'indexHtml',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, 'href="icon.svg"') // MUTANT
+      : s)
+  });
+}
+
+// 注：maskable 图标「四边不得透明」这条护栏的变异体是**二进制产物**，
+// 没法用文本替换注入（要真去改 PNG 的像素），所以这里不登记；
+// 它的有效性是手工验证过的：把 maskable 上边一条像素抹成透明 → 测试精确报出
+// 「边缘有 514 个透明像素」。
 
 // ==================== 运行 ====================
 
