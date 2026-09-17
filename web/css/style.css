@@ -267,6 +267,50 @@ body {
   gap: 10px;
 }
 
+/* 调休 / 放假标记行。
+   触屏可点性：这几个按钮会被手机上「当天临时调课」这种场景高频点到，
+   所以高度别缩到 44px 以下（iOS 人机指南的硬指标）。 */
+.today-mark {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.btn-mini {
+  padding: 0 10px;
+  min-height: 32px;
+  font-size: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.btn-mini:hover { color: var(--text); border-color: var(--brand); }
+
+.btn-mini.active {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.chip-mark-off {
+  background: var(--warn-bg);
+  border-color: var(--warn);
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.chip-mark-makeup {
+  background: var(--brand-bg);
+  border-color: var(--brand);
+  color: var(--brand);
+  font-weight: 600;
+}
+
 .today-card {
   position: relative;
   flex: 1 1 200px;

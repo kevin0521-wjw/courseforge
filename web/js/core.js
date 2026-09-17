@@ -166,12 +166,20 @@
 
   // ==================== 课程查询 ====================
 
-  /** 某周某天的课程列表（按开始节次排序） */
+  /**
+   * 某周某天的课程列表（按开始节次排序）
+   *
+   * 容错：courses 不是数组时当作「没有课」。
+   * 起因是提醒引擎按定时器跑，工作区还没加载完就被触发过一次，
+   * 直接 null.length 抛异常会把整个 tick 打断（连累同一时刻的其他提醒）。
+   * 「数据没准备好」和「今天没课」在这里的结果本来就一样，没必要抛。
+   */
   function getDayCourses(courses, week, day) {
     var list = [];
+    if (!courses || typeof courses.length !== 'number') return list;
     for (var i = 0; i < courses.length; i++) {
       var c = courses[i];
-      if (c.day === day && courseCoversWeek(c, week)) list.push(c);
+      if (c && c.day === day && courseCoversWeek(c, week)) list.push(c);
     }
     list.sort(function (a, b) {
       return (a.startSection - b.startSection) || (a.endSection - b.endSection);
@@ -435,6 +443,25 @@
     }
     // 学期开始日期缺省时，取本周周一
     if (!s.semesterStart) s.semesterStart = formatDate(mondayOf(new Date()));
+
+    // 调休 / 放假日标记：{ 'YYYY-MM-DD': 'off' | 'makeup' }
+    // 只接受这两种值 —— 别的值一律丢弃，避免一份被写坏的数据让整个提醒引擎沉默
+    s.days = {};
+    if (raw.days && typeof raw.days === 'object' && !Array.isArray(raw.days)) {
+      for (var k in raw.days) {
+        if (!Object.prototype.hasOwnProperty.call(raw.days, k)) continue;
+        if (!/^\d{4}-\d{1,2}-\d{1,2}$/.test(k)) continue;
+        var v = raw.days[k];
+        if (v === 'off' || v === 'makeup') s.days[k] = v;
+      }
+    }
+
+    // 上课提醒配置（默认关闭，见 remind.js 顶部说明）
+    var rr = (raw.remind && typeof raw.remind === 'object') ? raw.remind : {};
+    var lead = Number(rr.lead);
+    if (!isFinite(lead) || lead < 0 || lead > 120) lead = 10;
+    s.remind = { enabled: rr.enabled === true, lead: Math.round(lead) };
+
     return s;
   }
 

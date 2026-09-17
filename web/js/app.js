@@ -12,6 +12,7 @@
   var ST = window.CourseStorage;
   var CI = window.CourseImporter;
   var ICS = window.CourseForgeICS;
+  var RM = window.CourseForgeRemind;
 
   if (!CF || !CR || !ST) {
     // 依赖缺失属于致命错误，直接提示而不是白屏
@@ -505,6 +506,37 @@
       }
       preview.innerHTML = rows;
     }
+    syncRemindUI();
+  }
+
+  /** 把提醒相关的设置与权限状态刷到设置抽屉里 */
+  function syncRemindUI() {
+    var enabled = document.getElementById('settingsRemindEnabled');
+    var lead = document.getElementById('settingsRemindLead');
+    var cfg = RM ? RM.remindConfig(state.settings) : { enabled: false, lead: 10 };
+
+    if (enabled) enabled.checked = cfg.enabled;
+    if (lead) {
+      // 选项由 RM.LEAD_CHOICES 生成，保证「界面能选的」和「引擎接受的」是同一份
+      if (!lead.options.length && RM) {
+        for (var i = 0; i < RM.LEAD_CHOICES.length; i++) {
+          var v = RM.LEAD_CHOICES[i];
+          var opt = document.createElement('option');
+          opt.value = String(v);
+          opt.textContent = v === 0 ? '上课时提醒' : v + ' 分钟前';
+          lead.appendChild(opt);
+        }
+      }
+      lead.value = String(cfg.lead);
+      lead.disabled = !cfg.enabled;
+    }
+    updateNotifyUI();
+  }
+
+  /** 通知权限状态文案（三种权限 + 环境不支持，说清楚各自该怎么办） */
+  function updateNotifyUI() {
+    var el = document.getElementById('notifyState');
+    if (el) el.textContent = notifyStateText();
   }
 
   function onSettingsSave() {
@@ -514,6 +546,8 @@
     var totalWeeks = document.getElementById('settingsTotalWeeks');
     var sectionsPerDay = document.getElementById('settingsSectionsPerDay');
     var showWeekend = document.getElementById('settingsShowWeekend');
+    var remindOn = document.getElementById('settingsRemindEnabled');
+    var remindLead = document.getElementById('settingsRemindLead');
     if (!startDate.value) {
       showToast('请选择学期开始日期');
       return;
@@ -523,8 +557,20 @@
       totalWeeks: Number(totalWeeks.value),
       sectionsPerDay: Number(sectionsPerDay.value),
       showWeekend: showWeekend ? showWeekend.checked : true,
-      sectionTimes: state.settings.sectionTimes
+      sectionTimes: state.settings.sectionTimes,
+      // 调休标记与提醒配置不属于这个表单的可见字段，但必须一起带过去，
+      // 否则「保存设置」会把用户之前标的放假日期静默抹掉
+      days: state.settings.days,
+      remind: RM ? RM.remindSettings(state.settings, {
+        enabled: remindOn ? remindOn.checked : false,
+        lead: remindLead ? Number(remindLead.value) : undefined
+      }) : state.settings.remind
     });
+    // 学期日期可能被改过，顺手清掉已经落在学期之外的调休标记，免得 days 无限长大
+    var before = Object.keys(next.days || {}).length;
+    next.days = RM ? RM.pruneDayMarks(next) : next.days;
+    var dropped = before - Object.keys(next.days || {}).length;
+
     // 作息预设：选了预设就用预设节次覆盖（并同步每日节次数）
     var presetSel = document.getElementById('settingsTimePreset');
     if (presetSel && presetSel.value !== 'keep') {
@@ -536,7 +582,8 @@
     persist();
     syncSettingsUI();
     refreshAll();
-    showToast('设置已保存');
+    runReminderTick(); // 刚把提醒打开时，别等到下一次定时器才有反应
+    showToast('设置已保存' + (dropped > 0 ? '（清理了 ' + dropped + ' 个学期外的调休标记）' : ''));
     panel.hidden = true;
   }
 
@@ -614,6 +661,85 @@
     showToast('主题：' + THEME_LABEL[next]);
   }
 
+  // ==================== 上课提醒 ====================
+
+  /** 已弹过的提醒 key（由 remind.runTick 维护，跨 tick 去重） */
+  var firedAlerts = {};
+
+  /** 通知权限：'unsupported' | 'default' | 'granted' | 'denied' */
+  function notifyPermission() {
+    if (typeof window.Notification === 'undefined') return 'unsupported';
+    return window.Notification.permission || 'default';
+  }
+
+  function notifyStateText() {
+    var p = notifyPermission();
+    if (p === 'unsupported') return '当前环境不支持系统通知，提醒会改成页面内提示。';
+    if (p === 'granted') return '浏览器通知已允许，到点会弹系统通知。';
+    if (p === 'denied') return '浏览器通知被拒绝，提醒只会显示在页面里。可在地址栏左侧的站点设置里重新允许。';
+    return '还没有允许通知权限。点下面按钮授权后，切到别的标签页也能收到提醒。';
+  }
+
+  /**
+   * 真正把提醒送出去。
+   * 拿不到系统通知权限就退化成页内提示 —— 提醒这件事宁可弱一点，也不能静默丢掉。
+   */
+  function deliverAlert(a) {
+    try {
+      if (notifyPermission() === 'granted') {
+        var n = new window.Notification(a.title, { body: a.body, tag: a.key, icon: 'icon.svg' });
+        n.onclick = function () {
+          try { window.focus(); } catch (e) { /* 某些环境不允许聚焦 */ }
+          n.close();
+        };
+        return;
+      }
+    } catch (e) { /* 构造通知失败就往下走，退化成页内提示 */ }
+    showToast(a.title + (a.body ? ' · ' + a.body : ''));
+  }
+
+  /** 跑一轮提醒检查；提醒没开时顺手把去重表清空，避免关掉再打开后「旧账」被翻出来 */
+  function runReminderTick() {
+    if (!RM || !state.settings) return;
+    if (!RM.remindConfig(state.settings).enabled) {
+      firedAlerts = {};
+      return;
+    }
+    var res = RM.runTick(
+      { courses: state.courses, settings: state.settings, fired: firedAlerts },
+      new Date(),
+      deliverAlert
+    );
+    firedAlerts = res.fired;
+  }
+
+  /**
+   * 切换今天的调休标记：'' → 'off'/'makeup'，再点一次取消。
+   * 为什么会放在「今天」面板而不是设置里：调休是当天才知道的事，
+   * 埋在设置里等于没有 —— 竞品普遍做成「今天/明天一键换课」就是这个道理。
+   */
+  function onToggleDayMark(mark) {
+    if (!RM) { showToast('提醒模块未加载，请刷新页面'); return; }
+    var today = CF.formatDate(new Date());
+    var days = RM.toggleDayMark(state.settings, today, mark);
+    var next = CF.normalizeSettings({
+      semesterStart: state.settings.semesterStart,
+      totalWeeks: state.settings.totalWeeks,
+      sectionsPerDay: state.settings.sectionsPerDay,
+      showWeekend: state.settings.showWeekend,
+      sectionTimes: state.settings.sectionTimes,
+      remind: state.settings.remind,
+      days: days
+    });
+    state.settings = next;
+    firedAlerts = {}; // 标记变了，今天该不该提醒也跟着变，去重表必须一起重置
+    persist();
+    refreshAll();
+    var now = RM.dayMark(state.settings, today);
+    showToast(now === 'off' ? '已标记今天放假，上课提醒会跳过'
+      : (now === 'makeup' ? '已标记今天调休补课' : '已取消今天的标记'));
+  }
+
   // ==================== 今日课程实时刷新 ====================
 
   var liveTimer = null;
@@ -621,7 +747,11 @@
   function startClock() {
     if (liveTimer) clearInterval(liveTimer);
     liveTimer = setInterval(function () {
-      if (document.hidden) return; // 页面不可见时不刷新，省电
+      // 提醒先跑，且**不受 document.hidden 影响** —— 页面被切到后台、窗口被最小化，
+      // 恰恰是最需要提醒的时候；把提醒和重绘一起跳过等于「最小化就静默失联」。
+      // 重绘才需要跳过（省电，也避免打断用户）。
+      runReminderTick();
+      if (document.hidden) return;
       refreshLive();
     }, 30000);
     // Node / jsdom 环境下定时器会阻止进程退出（测试跑不完），主动标记为「不阻塞」
@@ -739,8 +869,38 @@
     'delete-semester': function (el) { onDeleteSemester(el.getAttribute('data-id')); },
     'parity-all': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'all', state.settings.totalWeeks); renderDraft(); },
     'parity-odd': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'odd', state.settings.totalWeeks); renderDraft(); },
-    'parity-even': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'even', state.settings.totalWeeks); renderDraft(); }
+    'parity-even': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'even', state.settings.totalWeeks); renderDraft(); },
+    // 上课提醒 / 调休
+    'request-notify': requestNotifyPermission,
+    'mark-day-off': function () { onToggleDayMark('off'); },
+    'mark-day-makeup': function () { onToggleDayMark('makeup'); },
+    'clear-day-mark': function () { onToggleDayMark(''); }
   };
+
+  /**
+   * 申请通知权限。
+   * 两种 API 都要接：新版返回 Promise，老版（含部分 Safari）只回调，
+   * 只认一种的话在另一种上会静默什么都不发生 —— 用户点了按钮但没反应，最难排查。
+   */
+  function requestNotifyPermission() {
+    if (typeof window.Notification === 'undefined') {
+      showToast('当前环境不支持系统通知，提醒会改成页面内提示');
+      return;
+    }
+    var done = function (res) {
+      updateNotifyUI();
+      if (res === 'granted') showToast('已允许通知，上课前会提醒你');
+      else if (res === 'denied') showToast('通知被拒绝，可以到浏览器站点设置里重新允许');
+      else showToast('没有做出选择，可以稍后再点一次');
+    };
+    try {
+      var r = window.Notification.requestPermission(done);
+      if (r && typeof r.then === 'function') r.then(done);
+    } catch (e) {
+      showToast('申请通知权限失败：' + (e && e.message ? e.message : '未知错误'));
+    }
+    updateNotifyUI();
+  }
 
   function onDocumentClick(e) {
     // 弹窗遮罩点击关闭
@@ -857,10 +1017,14 @@
     if (chip && window.CourseForgeDesktop) chip.textContent = '桌面版 · 本地保存';
     // 新建学期弹窗的默认值
     syncSemesterModalDefaults();
-    // 今日课程实时刷新（每分钟一次，页面不可见时暂停）
+    // 今日课程实时刷新（每分钟一次，页面不可见时暂停重绘但保留提醒）
     startClock();
     registerSW();
     refreshAll();
+    // 首屏就检查一次提醒：用户可能就是在课前两分钟才打开页面的，
+    // 那正是最该立刻提醒的时刻，等到 30 秒后的第一次 tick 也不算错，但没必要等
+    syncRemindUI();
+    runReminderTick();
   }
 
   function bindEvents() {

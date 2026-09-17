@@ -5,18 +5,20 @@
  *  - 渲染函数之间只允许单向组合（如 renderGrid 内部拼卡片），严禁互相调用形成环
  *  - 所有用户数据输出必须经过 esc() 转义
  * 依赖：core.js（浏览器端挂载在 window.CourseForge，Node 端 require）
+ *       remind.js（读调休/放假标记，避免「哪些值是合法的」在两处各写一遍）
  */
 (function (root, factory) {
-  var CF = (typeof module === 'object' && typeof module.exports === 'object')
-    ? require('./core.js')
-    : root.CourseForge;
-  var api = factory(CF);
-  if (typeof module === 'object' && typeof module.exports === 'object') {
+  var mod = (typeof module === 'object' && typeof module.exports === 'object');
+  var CF = mod ? require('./core.js') : root.CourseForge;
+  // 提醒模块缺失不该让整个页面渲染不出来 —— 它只影响「今天」面板上的标记显示
+  var RM = mod ? require('./remind.js') : root.CourseForgeRemind;
+  var api = factory(CF, RM);
+  if (mod) {
     module.exports = api;
   } else {
     root.CourseRender = api;
   }
-})(typeof self !== 'undefined' ? self : this, function (CF) {
+})(typeof self !== 'undefined' ? self : this, function (CF, RM) {
   'use strict';
 
   // ==================== 基础 ====================
@@ -142,13 +144,27 @@
     var html = '';
     var todayDay = businessDay(now);
     var dateText = (now.getMonth() + 1) + '月' + now.getDate() + '日 ' + CF.DAY_NAMES[todayDay - 1];
+    var mark = RM ? RM.dayMark(settings, CF.formatDate(now)) : '';
 
     html += '<div class="today-head">';
     html += '<span class="today-title">' + icon('clock') + '今天 · ' + esc(dateText) + '</span>';
     html += '<span class="today-clock" title="每分钟自动刷新">' + esc(hhmm(now)) + '</span>';
+    if (mark === 'off') {
+      html += '<span class="chip chip-mark-off">今天放假</span>';
+    } else if (mark === 'makeup') {
+      html += '<span class="chip chip-mark-makeup">调休补课</span>';
+    }
     if (week >= 1 && week <= settings.totalWeeks) {
       html += '<span class="chip">第 ' + week + ' 周</span>';
     }
+    html += '</div>';
+
+    // 调休标记：学校的调休安排跟法定假日并不完全一样（周末补课、周中放假都有），
+    // 联网拉节假日表既不准也不必要，让用户点一下最可靠。放假日会连带跳过上课提醒。
+    html += '<div class="today-mark">';
+    html += '<button class="btn btn-mini' + (mark === 'off' ? ' active' : '') + '" data-action="mark-day-off">今天放假</button>';
+    html += '<button class="btn btn-mini' + (mark === 'makeup' ? ' active' : '') + '" data-action="mark-day-makeup">调休补课</button>';
+    if (mark) html += '<button class="btn btn-mini" data-action="clear-day-mark">取消标记</button>';
     html += '</div>';
 
     // 学期未开始 / 已结束
@@ -158,6 +174,11 @@
     }
     if (week > settings.totalWeeks) {
       html += '<div class="today-empty">本学期已结束，好好休息！可在「设置」中新建学期。</div>';
+      return html;
+    }
+
+    if (mark === 'off') {
+      html += '<div class="today-empty">今天标记为放假，课表与上课提醒都会跳过。</div>';
       return html;
     }
 

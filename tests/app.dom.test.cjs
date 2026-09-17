@@ -50,6 +50,26 @@ const ROOT = path.join(__dirname, '..');
 const WEB = path.join(ROOT, 'web');
 
 /**
+ * 按 index.html 里 <script src> 的**真实顺序**取出本地脚本。
+ *
+ * 为什么不再手写一份清单：原来的清单是手抄的，而 index.html 里其实还有
+ * pdf-layout.js —— 也就是说「测试跑的页面」和「用户跑的页面」已经不是同一个了。
+ * 这种漂移不会报警，只会让 DOM 测试慢慢变成安慰剂。直接从 HTML 推导，
+ * 保证测的就是真的。
+ *
+ * @returns {Promise<{src: string, code: string}[]>}
+ */
+function scriptsInOrder(html) {
+  const srcs = [];
+  const re = /<script\s+src="([^"]+)"\s*>\s*<\/script>/g;
+  let m;
+  while ((m = re.exec(html)) !== null) srcs.push(m[1]);
+  return Promise.all(srcs.map((src) =>
+    readFile(path.join(WEB, src), 'utf-8').then((code) => ({ src, code }))
+  ));
+}
+
+/**
  * @param {(w: Window) => void} [seedFn] 在脚本执行前预置 localStorage（用于测试旧数据迁移）
  */
 function bootDom(seedFn) {
@@ -65,25 +85,9 @@ function bootDom(seedFn) {
     if (!w.URL.createObjectURL) w.URL.createObjectURL = () => 'blob:stub';
     if (!w.URL.revokeObjectURL) w.URL.revokeObjectURL = () => {};
     if (typeof seedFn === 'function') seedFn(w);
-    return Promise.all([
-      readFile(path.join(WEB, 'js', 'core.js'), 'utf-8'),
-      readFile(path.join(WEB, 'js', 'storage.js'), 'utf-8'),
-      readFile(path.join(WEB, 'js', 'render.js'), 'utf-8'),
-      readFile(path.join(WEB, 'js', 'parser.js'), 'utf-8'),
-      readFile(path.join(WEB, 'js', 'edu-html.js'), 'utf-8'),
-      readFile(path.join(WEB, 'js', 'ics.js'), 'utf-8'),
-      readFile(path.join(WEB, 'js', 'importer.js'), 'utf-8'),
-      readFile(path.join(WEB, 'js', 'app.js'), 'utf-8')
-    ]).then(([core, storage, render, parser, eduHtml, ics, importer, app]) => {
-      // 按依赖顺序执行（app.js 会因 readyState 非 loading 直接 init）
-      w.eval(core);
-      w.eval(storage);
-      w.eval(render);
-      w.eval(parser);
-      w.eval(eduHtml);
-      w.eval(ics);
-      w.eval(importer);
-      w.eval(app);
+    return scriptsInOrder(html).then((scripts) => {
+      // 按 index.html 的顺序执行（app.js 会因 readyState 非 loading 直接 init）
+      scripts.forEach((s) => w.eval(s.code));
       return w;
     });
   });
@@ -864,6 +868,49 @@ D('旧版桌面端（没有新桥方法）不炸：给出可执行的替代路�
     doc.querySelector('[data-action="edu-forget"]').click();
     // 清除账号在旧版里没有对应能力，但也不能抛异常把整个面板搞死
     assert.ok(doc.getElementById('eduCredState').textContent.length > 0);
+  });
+});
+
+D('设置面板：提醒开关能存进设置，重开面板会回显', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    doc.querySelector('[data-action="open-settings"]').click();
+
+    const enabled = doc.getElementById('settingsRemindEnabled');
+    const lead = doc.getElementById('settingsRemindLead');
+    assert.equal(enabled.checked, false, '默认必须是关的：浏览器通知权限只能由用户点击触发');
+    assert.equal(lead.disabled, true, '开关关闭时，提前量选择应当置灰（否则用户会以为选了就生效）');
+
+    enabled.checked = true;
+    lead.value = '15';
+    doc.querySelector('[data-action="save-settings"]').click();
+
+    // 落盘的是「多学期工作区」结构（{ activeId, semesters:[{ settings }] }），
+    // 不是扁平的 { settings } —— 取错层级会拿到 undefined，于是断言永远测不到真东西
+    const ws = JSON.parse(w.localStorage.getItem('wb_courseforge_v1'));
+    const active = ws.semesters.filter((s) => s.id === ws.activeId)[0];
+    assert.ok(active, '找不到当前学期，存储结构变了');
+    assert.equal(active.settings.remind.enabled, true, '提醒开关没落盘');
+    assert.equal(active.settings.remind.lead, 15, '提前量必须是数字 15，而不是字符串');
+
+    // 重开面板：如果不同步回来，用户会以为「保存了但没生效」
+    doc.querySelector('[data-action="open-settings"]').click();
+    assert.equal(doc.getElementById('settingsRemindEnabled').checked, true);
+    assert.equal(doc.getElementById('settingsRemindLead').value, '15');
+    assert.equal(doc.getElementById('settingsRemindLead').disabled, false);
+  });
+});
+
+D('设置面板：提前量只能选引擎认得的档位（界面与引擎同一份取值）', () => {
+  return bootDom().then((w) => {
+    const doc = w.document;
+    doc.querySelector('[data-action="open-settings"]').click();
+    const lead = doc.getElementById('settingsRemindLead');
+    const values = Array.prototype.map.call(lead.options, (o) => o.value);
+    // 用字符串比较而不是 deepEqual：jsdom 里的数组来自另一个 realm，
+    // deepStrictEqual 会因为「数组原型不同」而失败（是陷阱，不是真的不一致）
+    assert.equal(values.join(','), w.CourseForgeRemind.LEAD_CHOICES.join(','),
+      '下拉选项与 RM.LEAD_CHOICES 必须一致，否则会出现「选了却被引擎忽略」的档位');
   });
 });
 
