@@ -18,3 +18,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# 一次性探针与草稿（下划线前缀）；tools/_tmp 曾出现用户浏览器 cookie 库，
+# 这类东西绝不能进仓库 —— 显式忽略，别指望每次记得手动挑文件
+tools/_*
+tools/_tmp/

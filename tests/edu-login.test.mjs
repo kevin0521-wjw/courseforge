@@ -321,3 +321,82 @@ test('内置候选：页面路径与数据接口路径成对给出，且都是�
     assert.ok(/gnmkdm=/.test(c.page));
   }
 });
+
+test('内置候选：页面路径本身就是数据接口（正方同一个 .html 是双面的）', () => {
+  // 第一版把界面路径换算成了另一个名字（_cxXsgrkb → _cxXsKb）当接口，
+  // 结果接口名整个是错的。这条断言把这个事实钉死，防止有人「顺手优化」回去。
+  const c = EduLogin.TIMETABLE_CANDIDATES[0];
+  assert.equal(c.api, c.page,
+    'GET 出页面、POST 出 JSON 是同一个 .html，不存在路径换算关系');
+});
+
+test('兜底请求体必须带学期与 kzlx=ck', () => {
+  // 学期发空值在部分版本会静默返回空课表 —— 表现成「导入成功但一节课都没有」，
+  // 是最难查的一类失败。所以显式学期是主路径，这个空值只是兜底，
+  // 但 kzlx 不能省：页面 JS 一直在发它。
+  assert.match(EduLogin.TIMETABLE_BODY, /xnm=/);
+  assert.match(EduLogin.TIMETABLE_BODY, /xqm=/);
+  assert.match(EduLogin.TIMETABLE_BODY, /kzlx=ck/);
+});
+
+// ==================== 学期：从页面读，不靠推算 ====================
+
+test('parseSemesterOptions：优先取带 selected 的那个选项', () => {
+  const html = '<select id="xnm" name="xnm">'
+    + '<option value="2025">2025-2026</option>'
+    + '<option value="2026" selected="selected">2026-2027</option>'
+    + '</select>'
+    + '<select id="xqm"><option value="12">第二学期</option>'
+    + '<option value="3" selected>第一学期</option></select>';
+  assert.deepEqual(EduLogin.parseSemesterOptions(html), { xnm: '2026', xqm: '3' });
+});
+
+test('parseSemesterOptions：没有 selected 时跳过空 value 的「请选择」', () => {
+  const html = '<select id="xnm"><option value="">请选择</option>'
+    + '<option value="2026">2026-2027</option></select>';
+  assert.equal(EduLogin.parseSemesterOptions(html).xnm, '2026');
+});
+
+test('parseSemesterOptions：认不出来时回空串，不抛异常也不编一个值', () => {
+  // 编一个「按当前月份推算的学期」看起来更贴心，其实更坏事：
+  // 各校校历、小学期都不同，推错了会说成「这学期没课」。
+  for (const bad of ['', null, undefined, '<html>没有下拉</html>',
+    '<select id="xnm"></select>', '<select id="xnm"><option>无 value</option></select>']) {
+    assert.deepEqual(EduLogin.parseSemesterOptions(bad), { xnm: '', xqm: '' },
+      '输入: ' + String(bad));
+  }
+});
+
+test('parseSemesterOptions：option 文本里的标签不会混进值', () => {
+  const html = '<select id="xnm"><option value="2026"><b>2026</b>-2027 学年</option></select>';
+  assert.equal(EduLogin.parseSemesterOptions(html).xnm, '2026');
+});
+
+test('bodyFor：学期值来自外部页面，必须转义后再拼请求体', () => {
+  assert.equal(EduLogin.bodyFor('2026', '3'), 'xnm=2026&xqm=3&kzlx=ck');
+  assert.equal(EduLogin.bodyFor('20&26', '3=1'), 'xnm=20%2626&xqm=3%3D1&kzlx=ck');
+  assert.equal(EduLogin.bodyFor(null, undefined), 'xnm=&xqm=&kzlx=ck');
+});
+
+// ==================== 失败诊断：不同原因要说不同的话 ====================
+
+test('describeKbResponse：把「会话过期」「接口不对」「这学期没课」分开说', () => {
+  // 这三种情况在代码里长得几乎一样（都不是 kbList），但用户该做的事完全不同：
+  // 重新登录 / 换个接口 / 本来就没事。第一版三种都报「没找到课表」，
+  // 等于把排查工作全丢回给用户。
+  assert.match(EduLogin.describeKbResponse(200, '<html>请先登录</html>'), /会话已失效/);
+  assert.match(EduLogin.describeKbResponse(200, '{"errcode":-1}'), /没有课表数组/);
+  assert.match(EduLogin.describeKbResponse(200, '{"kbList":[]}'), /空的/);
+  assert.match(EduLogin.describeKbResponse(200, '{"data":{"kbList":[{"kcmc":"高数"}]}}'), /有课表数据/);
+  assert.match(EduLogin.describeKbResponse(302, ''), /HTTP 302/);
+  assert.match(EduLogin.describeKbResponse(200, ''), /空的/);
+  assert.match(EduLogin.describeKbResponse(200, '<!DOCTYPE html><html>x</html>'), /不是 JSON/);
+});
+
+test('buildPageGetScript：GET 而不是 POST，且仍然同源带凭据', () => {
+  const s = EduLogin.buildPageGetScript('/jwglxt/kbcx/x1.html?gnmkdm=N2151');
+  assert.match(s, /method: "GET"/);
+  assert.match(s, /credentials: "same-origin"/);
+  assert.ok(!/method: "POST"/.test(s));
+  assert.match(s, /\/jwglxt\/kbcx\/x1\.html\?gnmkdm=N2151/);
+});

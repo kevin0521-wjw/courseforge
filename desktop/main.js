@@ -395,19 +395,58 @@ async function fetchTimetable() {
 
   const candidates = buildCandidates(discovered);
 
-  // 第一轮：数据接口
+  // 先问一次「现在是哪个学期」。
+  // 正方页面把当前学期渲染在 #xnm / #xqm 两个下拉里，这是唯一的权威来源 ——
+  // 自己按月份推开学日会在小学期、寒假小学期、各校不同校历上翻车。
+  const bodies = [];
+  let semLabel = '';
+  for (let s = 0; s < candidates.length && !semLabel; s++) {
+    if (!candidates[s].page) continue;
+    let pg = null;
+    try {
+      pg = await wc.executeJavaScript(
+        EduLogin.buildPageGetScript(origin + candidates[s].page), true);
+    } catch (e) {
+      pg = null;
+    }
+    if (!pg || pg.status !== 200 || !pg.text) continue;
+    const sem = EduLogin.parseSemesterOptions(pg.text);
+    if (sem.xnm || sem.xqm) {
+      bodies.push(EduLogin.bodyFor(sem.xnm, sem.xqm));
+      semLabel = (sem.xnm || '?') + '/' + (sem.xqm || '?');
+    }
+  }
+  bodies.push(EduLogin.TIMETABLE_BODY); // 兜底：不显式指定学期
+
+  // 第一轮：数据接口（每个候选 × 每种学期参数）
+  let failWhy = '';
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
     if (!c.api) continue;
-    let res = null;
-    try {
-      res = await wc.executeJavaScript(
-        EduLogin.buildFetchScript(c.api, EduLogin.TIMETABLE_BODY), true);
-    } catch (e) {
-      res = null;
-    }
-    if (res && res.status === 200 && EduLogin.hasKbList(res.body)) {
-      return { ok: true, source: 'api', candidate: c.name, json: res.body, pageUrl: c.page ? origin + c.page : '' };
+    for (let b = 0; b < bodies.length; b++) {
+      let res = null;
+      try {
+        res = await wc.executeJavaScript(
+          EduLogin.buildFetchScript(c.api, bodies[b]), true);
+      } catch (e) {
+        res = null;
+      }
+      if (res && res.status === 200 && EduLogin.hasKbList(res.body)) {
+        return {
+          ok: true,
+          source: 'api',
+          candidate: c.name + (semLabel ? '（' + semLabel + '）' : ''),
+          json: res.body,
+          pageUrl: c.page ? origin + c.page : ''
+        };
+      }
+      // 记下最像课表接口的那次失败原因：「接口名不对」「学期参数不对」
+      // 「会话过期」三件事用户要做的事完全不同，不能在最后笼统报一句「没找到」。
+      // 优先保留「有课表外壳但内容为空」这种最接近成功的诊断。
+      if (res && res.status === 200) {
+        const why = EduLogin.describeKbResponse(res.status, res.body);
+        if (!failWhy || /空/.test(why)) failWhy = c.name + '：' + why;
+      }
     }
   }
 
@@ -435,7 +474,10 @@ async function fetchTimetable() {
   return {
     ok: false,
     reason: 'notfound',
-    message: '自动找课表没成功。请手动在教务窗口里打开课表页面，再点「读取当前页课表」'
+    message: (failWhy
+      ? '没能自动取到课表 —— 接口诊断：' + failWhy + '。'
+      : '没能自动取到课表。')
+      + '你也可以在教务窗口里手动打开课表页面，再点「读取当前页课表」'
   };
 }
 
@@ -461,7 +503,10 @@ function buildCandidates(discovered) {
       const d = discovered[i];
       const url = typeof d === 'string' ? d : (d && d.url);
       if (typeof url !== 'string' || !/^\/jwglxt\//.test(url)) continue;
-      add({ name: (d && d.text) || '菜单发现', page: url, api: guessApiPath(url) });
+      const apis = guessApiPaths(url);
+      for (let a = 0; a < apis.length; a++) {
+        add({ name: (d && d.text) || '菜单发现', page: url, api: apis[a] });
+      }
     }
   }
 
@@ -472,16 +517,27 @@ function buildCandidates(discovered) {
 }
 
 /**
- * 从课表页路径推数据接口路径。
- * 只认已知的命名规律（页面 `_cxXsgrkb` ↔ 数据 `_cxXsKb`），推不出来就不猜 ——
- * 瞎猜出来的接口 404 只会白跑一趟，还会污染日志。
+ * 从课表页路径推可能要试的数据接口路径。
+ *
+ * 关键事实（踩过一次才记住）：正方同一个 `.html` 是**双面的** ——
+ * GET 出课表页面，POST 出 kbList 的 JSON。所以**页面路径本身就是第一候选**，
+ * 根本不需要「换算成接口路径」；下面那些变体只是不同版本/学校用过的另一个名字，
+ * 排在后面当兜底。
+ *
+ * 返回数组而不是单个值：宁可多试一个已知的合法变体，也不要在唯一的假设上失败。
+ * 非法输入（不是站内路径）直接返回空数组 —— 不猜，猜出来的地址只会白跑并污染日志。
  */
-function guessApiPath(pageUrl) {
+function guessApiPaths(pageUrl) {
   const page = String(pageUrl == null ? '' : pageUrl);
+  if (!/^\/jwglxt\//.test(page)) return [];
+
+  const out = [page];
   if (/xskbcx_cxXsgrkb\.html/.test(page)) {
-    return page.replace('xskbcx_cxXsgrkb.html', 'xskbcx_cxXsKb.html');
+    out.push(page.replace('xskbcx_cxXsgrkb.html', 'xskbcx_cxXsKb.html'));
+  } else if (/xskbcx_cxXsKb\.html/.test(page)) {
+    out.push(page.replace('xskbcx_cxXsKb.html', 'xskbcx_cxXsgrkb.html'));
   }
-  return null;
+  return out;
 }
 
 function registerAutoLoginIpc() {
