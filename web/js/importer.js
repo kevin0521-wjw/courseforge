@@ -247,6 +247,8 @@
     if (input && !input.value) {
       try { input.value = localStorage.getItem(EDU_URL_KEY) || ''; } catch (e) { /* 隐私模式忽略 */ }
     }
+    // 账号状态每次切进来都重新问一次主进程：用户可能在别处清除过
+    onEduCredStatus();
   }
 
   function onEduOpen() {
@@ -274,7 +276,7 @@
     d.grab().then(function (res) {
       if (!res || !res.ok) {
         if (res && res.reason === 'nowindow') {
-          setStatus('还没有打开教务系统窗口，请先点「打开教务系统并登录」');
+          setStatus('还没有打开教务系统窗口，请先点「打开教务系统窗口」');
         } else {
           setStatus('读取失败：' + ((res && res.message) || '未知错误'));
         }
@@ -299,6 +301,180 @@
     });
   }
 
+  // ==================== 自动登录与取课表（桌面端） ====================
+
+  /** 当前教务账号的保存状态（主进程只回用户名，密码永不下发） */
+  var eduCred = { available: false, saved: false, username: '' };
+
+  /** 刷新「账号状态」这一行的文案 */
+  function renderEduCredState() {
+    var el = $('eduCredState');
+    if (!el) return;
+    if (!eduCred.available) {
+      el.textContent = '本机没有可用的加密存储，无法保存账号（Windows 一般不会遇到）。不影响手动登录。';
+      return;
+    }
+    el.textContent = eduCred.saved
+      ? '已保存账号：' + eduCred.username + '（本机加密存储，密码不下发到页面）。留空密码直接点「一键登录并取课表」即可。'
+      : '账号未保存。登录成功后如勾选「记住账号」，下次可以只点一下按钮。';
+  }
+
+  function onEduCredStatus() {
+    var d = desktopEdu();
+    if (!d || typeof d.credStatus !== 'function') return Promise.resolve();
+    return d.credStatus().then(function (st) {
+      if (st && typeof st === 'object') {
+        eduCred = {
+          available: !!st.available,
+          saved: !!st.saved,
+          username: st.username || ''
+        };
+      }
+      // 已保存过就把学号填回去，省得用户再打一遍（密码仍然要用户按需输入）
+      var u = $('eduUser');
+      if (u && !u.value && eduCred.saved) u.value = eduCred.username;
+      var rm = $('eduRemember');
+      if (rm && eduCred.saved) rm.checked = true;
+      renderEduCredState();
+    })['catch'](function () { /* 状态拿不到不影响主流程 */ });
+  }
+
+  function currentEduUrl() {
+    var input = $('eduUrl');
+    var url = (input ? input.value : '').trim();
+    if (!url) return '';
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    try { localStorage.setItem(EDU_URL_KEY, url); } catch (e) { /* 隐私模式忽略 */ }
+    return url;
+  }
+
+  /** 登录结果 → 状态栏文案。失败原因是给用户看的最关键信息，不要笼统化 */
+  function reportLoginResult(res) {
+    if (!res || !res.ok) {
+      var reason = res && res.reason;
+      if (reason === 'nocred') { setStatus((res && res.message) || '请填写账号密码'); return false; }
+      if (reason === 'badurl') { setStatus('教务系统网址不正确'); return false; }
+      if (reason === 'captcha') {
+        setStatus('教务系统要求验证码：请在已打开的窗口里手动登录，完成后回到这里点「重新取课表」');
+        return false;
+      }
+      if (reason === 'fail') { setStatus('登录失败：' + ((res && res.message) || '用户名或密码错误')); return false; }
+      setStatus('登录没成功：' + ((res && res.message) || '未知原因'));
+      return false;
+    }
+    if (res.remembered) {
+      setStatus('登录成功，账号已加密保存在本机。正在获取课表…');
+    } else if (res.rememberError === 'noenc') {
+      setStatus('登录成功（本机加密存储不可用，账号未保存）。正在获取课表…');
+    } else {
+      setStatus('登录成功' + (res.alreadyLoggedIn ? '（用的是上次的登录状态）' : '') + '，正在获取课表…');
+    }
+    return true;
+  }
+
+  /** 把取课表的结果喂进确认表：接口数据走结构化解析，HTML 走版面解析 */
+  function feedEduResult(res) {
+    if (res.source === 'api') {
+      if (!window.CourseForgeEdu || typeof window.CourseForgeEdu.parseZfKbList !== 'function') {
+        setStatus('教务解析模块未加载，请刷新页面重试');
+        return;
+      }
+      var settings = bridge ? bridge.getSettings() : {};
+      var total = (settings && settings.totalWeeks) || 16;
+      var r = window.CourseForgeEdu.parseZfKbList(res.json, {
+        sectionTimes: settings && settings.sectionTimes,
+        totalWeeks: total
+      });
+      parsedItems = toResultItems(r.items, total);
+      renderResults(r.warnings);
+      if (!r.items.length) {
+        setStatus('教务接口已连上（' + res.candidate + '），但没解析出课程。可改用手动登录后「读取当前页课表」');
+        return;
+      }
+      setStatus('已从教务接口取到 ' + r.items.length + ' 门课（' + res.candidate
+        + '），请核对下方表格后点「导入所选」');
+      return;
+    }
+
+    // HTML 兜底路径：复用已有的页面解析
+    var rh = feedEduHtml(res.html);
+    if (!rh) return;
+    if (!rh.items.length) {
+      setStatus('已打开课表页面（' + res.candidate + '），但没识别出课表结构，请核对页面内容');
+      return;
+    }
+    setStatus('已从课表页面识别出 ' + rh.items.length + ' 门课（版面：' + layoutName(rh.layout)
+      + '），请核对下方表格后点「导入所选」');
+  }
+
+  function fetchEduCourses() {
+    var d = desktopEdu();
+    if (!d || typeof d.courses !== 'function') {
+      setStatus('当前桌面端版本不支持一键取课表，请用「打开教务系统窗口」+「读取当前页课表」');
+      return Promise.resolve();
+    }
+    return d.courses().then(function (res) {
+      if (!res || !res.ok) {
+        setStatus('取课表失败：' + ((res && res.message) || '未知原因'));
+        return;
+      }
+      feedEduResult(res);
+    })['catch'](function (err) {
+      setStatus('取课表失败：' + ((err && err.message) || '未知错误'));
+    });
+  }
+
+  function onEduAutoLogin() {
+    var d = desktopEdu();
+    if (!d || typeof d.login !== 'function') {
+      setStatus('当前桌面端版本不支持自动登录，请用「打开教务系统窗口」手动登录');
+      return;
+    }
+    var url = currentEduUrl();
+    if (!url) { setStatus('请先填写教务系统网址'); return; }
+
+    var uEl = $('eduUser');
+    var pEl = $('eduPass');
+    var rEl = $('eduRemember');
+    var username = uEl ? uEl.value.trim() : '';
+    var password = pEl ? pEl.value : '';
+    var remember = !!(rEl && rEl.checked);
+
+    if (!username && !eduCred.saved) { setStatus('请填写教务系统用户名（学号）'); return; }
+    if (!password && !eduCred.saved) {
+      setStatus('请填写密码；想以后免输入，就勾上「记住账号」再登录一次');
+      return;
+    }
+
+    setStatus('正在自动登录教务系统…（若学校开启验证码，会退回手动登录）');
+    d.login({ url: url, username: username, password: password, remember: remember }).then(function (res) {
+      // 无论成败都立刻清掉页面上的明文密码：成功时它已经交给主进程了，
+      // 失败时也没必要让它留在 DOM 里等着被念出来
+      if (pEl) pEl.value = '';
+      if (res && res.ok && res.remembered) { eduCred.saved = true; eduCred.username = username; }
+      if (!reportLoginResult(res)) { renderEduCredState(); return; }
+      renderEduCredState();
+      return fetchEduCourses();
+    })['catch'](function (err) {
+      if (pEl) pEl.value = '';
+      setStatus('自动登录失败：' + ((err && err.message) || '未知错误'));
+    });
+  }
+
+  function onEduForget() {
+    var d = desktopEdu();
+    if (!d || typeof d.credClear !== 'function') return;
+    d.credClear().then(function (res) {
+      eduCred = { available: true, saved: false, username: '' };
+      var rEl = $('eduRemember');
+      if (rEl) rEl.checked = false;
+      renderEduCredState();
+      setStatus((res && res.ok) ? '已清除本机保存的教务账号' : '清除失败，请手动删除应用数据目录下的账号文件');
+    })['catch'](function () {
+      setStatus('清除失败');
+    });
+  }
+
   function onEduCloseWindow() {
     var d = desktopEdu();
     if (!d) return;
@@ -310,6 +486,7 @@
     if (l === 'grid') return '课表网格';
     if (l === 'transposed') return '课表网格（转置）';
     if (l === 'list') return '课程列表';
+    if (l === 'api') return '教务接口';
     return '未识别';
   }
 
@@ -710,6 +887,9 @@
       if (action === 'edu-grab') { onEduGrab(); return; }
       if (action === 'edu-close-window') { onEduCloseWindow(); return; }
       if (action === 'edu-goto-text') { switchTab('text'); return; }
+      if (action === 'edu-autologin') { onEduAutoLogin(); return; }
+      if (action === 'edu-fetch') { setStatus('正在从教务系统取课表…'); fetchEduCourses(); return; }
+      if (action === 'edu-forget') { onEduForget(); return; }
     });
 
     // 遮罩点击关闭

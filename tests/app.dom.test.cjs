@@ -467,16 +467,51 @@ const EDU_GRID_HTML = `<html><head><title>个人课表</title></head><body>
 </table>
 </body></html>`;
 
+/** 正方课表接口的最小真实感返回（字段名按实测结构写） */
+const EDU_KB_API = {
+  kbList: [
+    {
+      kcmc: '高等数学(二)', xqjmc: '星期一', xqj: '1', jcs: '1-2', zcd: '1-16周',
+      cdmc: '东区一教101', xm: '张老师', xqmc: '宝山校区'
+    },
+    {
+      kcmc: '大学英语', xqjmc: '星期三', xqj: '3', jcs: '3-4', zcd: '1-8周(单)',
+      cdmc: '东区二教205', xm: '李老师', xqmc: '宝山校区'
+    }
+  ],
+  xqjmcMap: { '1': '星期一', '3': '星期三' }
+};
+
 /** 在 bootDom 之后注入桌面桥（模拟 Electron preload 暴露的能力） */
 function injectDesktop(w, over) {
-  const calls = { open: [], grab: 0, close: 0 };
+  const o = over || {};
+  const calls = { open: [], grab: 0, close: 0, login: [], courses: 0, credClear: 0 };
   w.CourseForgeDesktop = {
     isDesktop: true,
     platform: 'win32',
     edu: {
       open: (url) => { calls.open.push(url); return Promise.resolve(true); },
-      grab: () => { calls.grab++; return Promise.resolve(Object.assign({ ok: true, html: EDU_GRID_HTML }, over || {})); },
-      close: () => { calls.close++; return Promise.resolve(true); }
+      grab: () => { calls.grab++; return Promise.resolve(Object.assign({ ok: true, html: EDU_GRID_HTML }, o.grab || {})); },
+      close: () => { calls.close++; return Promise.resolve(true); },
+      login: (payload) => {
+        calls.login.push(payload);
+        return Promise.resolve(o.login || {
+          ok: true,
+          url: 'https://jwxt.shu.edu.cn/jwglxt/xtgl/index_initMenu.html?jsdm=xs',
+          remembered: !!(payload && payload.remember)
+        });
+      },
+      courses: () => {
+        calls.courses++;
+        return Promise.resolve(o.courses || {
+          ok: true, source: 'api', candidate: '学生课表查询', json: JSON.stringify(EDU_KB_API)
+        });
+      },
+      credStatus: () => Promise.resolve(o.cred || { available: true, saved: false, username: '' }),
+      credClear: () => {
+        calls.credClear++;
+        return Promise.resolve({ ok: true, status: { available: true, saved: false, username: '' } });
+      }
     }
   };
   return calls;
@@ -578,7 +613,7 @@ D('教务直连：没开教务窗口时读取，给明确提示而不是静默�
 D('教务直连：读取到非课表页面时明确说明，不产生垃圾数据', () => {
   return bootDom().then((w) => {
     const doc = w.document;
-    injectDesktop(w, { html: '<html><body><p>请先登录</p></body></html>' });
+    injectDesktop(w, { grab: { html: '<html><body><p>请先登录</p></body></html>' } });
     doc.querySelector('[data-action="open-import"]').click();
     doc.querySelector('[data-imp-tab="edu"]').click();
     doc.querySelector('[data-action="edu-grab"]').click();
@@ -601,6 +636,234 @@ D('教务直连：桌面端「去粘贴文本」与关闭窗口按钮可用', ()
 
     doc.querySelector('[data-action="edu-goto-text"]').click();
     assert.equal(doc.querySelector('[data-imp-pane="text"]').hidden, false);
+  });
+});
+
+// ==================== 一键登录并取课表 ====================
+
+/** 打开导入弹窗并切到教务面板 */
+function openEduPane(w) {
+  const doc = w.document;
+  doc.querySelector('[data-action="open-import"]').click();
+  doc.querySelector('[data-imp-tab="edu"]').click();
+  return doc;
+}
+
+D('自动登录：填账号 → 一键登录 → 取课表 → 进确认表，且密码不留在页面里', () => {
+  return bootDom().then((w) => {
+    const calls = injectDesktop(w);
+    const doc = openEduPane(w);
+
+    doc.getElementById('eduUrl').value = 'jwxt.shu.edu.cn';
+    doc.getElementById('eduUser').value = '26125005';
+    doc.getElementById('eduPass').value = 'my-secret-pw';
+    doc.querySelector('[data-action="edu-autologin"]').click();
+
+    return flush().then(() => {
+      assert.equal(calls.login.length, 1, '应调用一次自动登录');
+      const p = calls.login[0];
+      assert.equal(p.url, 'https://jwxt.shu.edu.cn', '网址应补全协议后传给主进程');
+      assert.equal(p.username, '26125005');
+      assert.equal(p.password, 'my-secret-pw');
+      assert.equal(p.remember, false, '没勾选就不该请求保存');
+
+      // 密码交给主进程后必须立刻从页面清掉：留在 DOM 里的明文没有任何用处，只有风险
+      assert.equal(doc.getElementById('eduPass').value, '', '登录后应立刻清空密码框');
+
+      assert.equal(calls.courses, 1, '登录成功后应自动取课表');
+      const status = doc.getElementById('importStatus').textContent;
+      assert.ok(/已从教务接口取到 2 门课/.test(status), '状态栏应说明走的是接口，实际: ' + status);
+      assert.ok(doc.getElementById('importResult').innerHTML.includes('高等数学'),
+        '接口返回的课程应进入确认表');
+      assert.ok(doc.getElementById('importResult').innerHTML.includes('张老师'));
+      assert.ok(doc.getElementById('importResult').innerHTML.includes('东区一教101'));
+    });
+  });
+});
+
+D('自动登录：勾「记住账号」时把 remember 传下去，并刷新账号状态文案', () => {
+  return bootDom().then((w) => {
+    const calls = injectDesktop(w);
+    const doc = openEduPane(w);
+
+    doc.getElementById('eduUrl').value = 'jwxt.shu.edu.cn';
+    doc.getElementById('eduUser').value = '26125005';
+    doc.getElementById('eduPass').value = 'pw';
+    doc.getElementById('eduRemember').checked = true;
+    doc.querySelector('[data-action="edu-autologin"]').click();
+
+    return flush().then(() => {
+      assert.equal(calls.login[0].remember, true, '勾了记住账号就要传 remember');
+      const state = doc.getElementById('eduCredState').textContent;
+      assert.ok(/已保存账号：26125005/.test(state), '应提示账号已保存，实际: ' + state);
+      assert.ok(!/pw/.test(state), '状态文案里不能出现密码');
+    });
+  });
+});
+
+D('自动登录：本机已存账号时，密码留空也能点按钮', () => {
+  return bootDom().then((w) => {
+    const calls = injectDesktop(w, {
+      cred: { available: true, saved: true, username: '26125005' },
+      login: { ok: true, url: 'https://jwxt.shu.edu.cn/jwglxt/xtgl/index_initMenu.html', alreadyLoggedIn: true }
+    });
+
+    // 把取课表卡住，好观察「登录成功」这条中间反馈 ——
+    // 否则它会立刻被取课表的结果覆盖，测不到（而用户在真机上就是靠它知道登录过了）
+    let release = null;
+    w.CourseForgeDesktop.edu.courses = () => {
+      calls.courses++;
+      return new Promise((r) => { release = r; });
+    };
+
+    const doc = openEduPane(w);
+
+    return flush().then(() => {
+      // 切进面板时应该已经把学号填回去了，省得用户再打一遍
+      assert.equal(doc.getElementById('eduUser').value, '26125005', '已保存的学号应自动填回');
+      assert.equal(doc.getElementById('eduRemember').checked, true);
+      assert.ok(/已保存账号/.test(doc.getElementById('eduCredState').textContent));
+
+      doc.getElementById('eduUrl').value = 'jwxt.shu.edu.cn';
+      doc.querySelector('[data-action="edu-autologin"]').click();
+      return flush();
+    }).then(() => {
+      assert.equal(calls.login.length, 1, '留空密码时应让主进程用已保存的密码，而不是拦住用户');
+      assert.equal(calls.login[0].password, '', '密码留空交给主进程去取已保存的那份');
+      assert.ok(/上次的登录状态/.test(doc.getElementById('importStatus').textContent),
+        '会话还在时要说明用的是上次登录状态，实际: ' + doc.getElementById('importStatus').textContent);
+
+      release({ ok: true, source: 'api', candidate: '学生课表查询', json: JSON.stringify(EDU_KB_API) });
+      return flush();
+    }).then(() => {
+      assert.ok(/已从教务接口取到 2 门课/.test(doc.getElementById('importStatus').textContent));
+    });
+  });
+});
+
+D('自动登录：失败时把学校给的原因原样显示，且不去取课表', () => {
+  return bootDom().then((w) => {
+    const calls = injectDesktop(w, {
+      login: { ok: false, reason: 'fail', message: '用户名或密码错误' }
+    });
+    const doc = openEduPane(w);
+    doc.getElementById('eduUrl').value = 'jwxt.shu.edu.cn';
+    doc.getElementById('eduUser').value = '26125005';
+    doc.getElementById('eduPass').value = 'wrong';
+    doc.querySelector('[data-action="edu-autologin"]').click();
+
+    return flush().then(() => {
+      const status = doc.getElementById('importStatus').textContent;
+      assert.ok(/登录失败：用户名或密码错误/.test(status), '失败原因必须来自学校页面，实际: ' + status);
+      assert.equal(calls.courses, 0, '没登录成功就不该去取课表');
+      assert.equal(doc.querySelectorAll('#importResult tr[data-idx]').length, 0);
+    });
+  });
+});
+
+D('自动登录：学校要验证码时退回手动，并指路「重新取课表」', () => {
+  return bootDom().then((w) => {
+    injectDesktop(w, { login: { ok: false, reason: 'captcha' } });
+    const doc = openEduPane(w);
+    doc.getElementById('eduUrl').value = 'jwxt.shu.edu.cn';
+    doc.getElementById('eduUser').value = '26125005';
+    doc.getElementById('eduPass').value = 'pw';
+    doc.querySelector('[data-action="edu-autologin"]').click();
+
+    return flush().then(() => {
+      const status = doc.getElementById('importStatus').textContent;
+      assert.ok(/验证码/.test(status) && /手动登录/.test(status), '要给可执行的替代路径，实际: ' + status);
+    });
+  });
+});
+
+D('重新取课表：不碰账号，直接走接口', () => {
+  return bootDom().then((w) => {
+    const calls = injectDesktop(w);
+    const doc = openEduPane(w);
+    doc.querySelector('[data-action="edu-fetch"]').click();
+
+    return flush().then(() => {
+      assert.equal(calls.courses, 1);
+      assert.equal(calls.login.length, 0, '「重新取课表」不该再动账号');
+      assert.ok(/已从教务接口取到 2 门课/.test(doc.getElementById('importStatus').textContent));
+    });
+  });
+});
+
+D('重新取课表：还没登录时给明确提示，而不是丢一个空表', () => {
+  return bootDom().then((w) => {
+    injectDesktop(w, { courses: { ok: false, reason: 'nologin', message: '还没登录教务系统，请先自动登录或手动登录' } });
+    const doc = openEduPane(w);
+    doc.querySelector('[data-action="edu-fetch"]').click();
+
+    return flush().then(() => {
+      const status = doc.getElementById('importStatus').textContent;
+      assert.ok(/还没登录教务系统/.test(status), '实际: ' + status);
+      assert.equal(doc.querySelectorAll('#importResult tr[data-idx]').length, 0);
+    });
+  });
+});
+
+D('取课表：接口取不到时退回抓页面，两种来源都要能进确认表', () => {
+  return bootDom().then((w) => {
+    injectDesktop(w, {
+      courses: { ok: true, source: 'html', candidate: '学生课表查询', html: EDU_GRID_HTML }
+    });
+    const doc = openEduPane(w);
+    doc.querySelector('[data-action="edu-fetch"]').click();
+
+    return flush().then(() => {
+      const html = doc.getElementById('importResult').innerHTML;
+      assert.ok(html.includes('高等数学'), 'HTML 兜底路径也要能解析出课程');
+      const status = doc.getElementById('importStatus').textContent;
+      assert.ok(/课表页面识别出/.test(status), '应说明走的是页面解析，实际: ' + status);
+    });
+  });
+});
+
+D('忘记账号：调用主进程清除，并回到未保存状态', () => {
+  return bootDom().then((w) => {
+    const calls = injectDesktop(w, { cred: { available: true, saved: true, username: '26125005' } });
+    const doc = openEduPane(w);
+
+    return flush().then(() => {
+      assert.equal(doc.getElementById('eduRemember').checked, true);
+      doc.querySelector('[data-action="edu-forget"]').click();
+      return flush();
+    }).then(() => {
+      assert.equal(calls.credClear, 1, '应调用主进程删除凭据');
+      assert.equal(doc.getElementById('eduRemember').checked, false, '清除后不该还显示勾选状态');
+      assert.ok(/账号未保存/.test(doc.getElementById('eduCredState').textContent));
+      assert.ok(/已清除/.test(doc.getElementById('importStatus').textContent));
+    });
+  });
+});
+
+D('旧版桌面端（没有新桥方法）不炸：给出可执行的替代路径', () => {
+  return bootDom().then((w) => {
+    // 只提供最早那三个方法，模拟旧版 preload
+    w.CourseForgeDesktop = {
+      isDesktop: true,
+      edu: {
+        open: () => Promise.resolve(true),
+        grab: () => Promise.resolve({ ok: true, html: EDU_GRID_HTML }),
+        close: () => Promise.resolve(true)
+      }
+    };
+    const doc = openEduPane(w);
+    doc.getElementById('eduUrl').value = 'jwxt.shu.edu.cn';
+    doc.getElementById('eduUser').value = 'u';
+
+    doc.querySelector('[data-action="edu-autologin"]').click();
+    assert.ok(/不支持自动登录/.test(doc.getElementById('importStatus').textContent));
+
+    doc.querySelector('[data-action="edu-fetch"]').click();
+    assert.ok(/不支持一键取课表/.test(doc.getElementById('importStatus').textContent));
+
+    doc.querySelector('[data-action="edu-forget"]').click();
+    // 清除账号在旧版里没有对应能力，但也不能抛异常把整个面板搞死
+    assert.ok(doc.getElementById('eduCredState').textContent.length > 0);
   });
 });
 

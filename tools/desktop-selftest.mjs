@@ -62,10 +62,31 @@ const PROBE = `(async () => {
     out.electronVersion = d.electronVersion;
     out.hasEduApi = !!(d.edu && typeof d.edu.open === 'function'
       && typeof d.edu.grab === 'function' && typeof d.edu.close === 'function');
+    // 自动登录那套能力也要真的到位：只有方法存在，界面上那些按钮才有意义
+    out.hasLoginApi = !!(d.edu && typeof d.edu.login === 'function'
+      && typeof d.edu.courses === 'function'
+      && typeof d.edu.credStatus === 'function' && typeof d.edu.credClear === 'function');
 
     // IPC 往返：还没有教务窗口时，grab 必须返回结构化结果而不是抛异常
     try { out.grabNoWindow = await d.edu.grab(); }
     catch (e) { out.grabThrew = String((e && e.message) || e); }
+
+    // 取课表同理：没窗口时应给结构化原因，而不是抛一个看不懂的异常
+    try { out.coursesNoWindow = await d.edu.courses(); }
+    catch (e) { out.coursesThrew = String((e && e.message) || e); }
+
+    // 账号存储状态：这里同时验证了本机的 safeStorage（Windows 走 DPAPI）真的可用。
+    // 如果 available 为 false，「记住账号」会静默存不上 —— 那是用户看不见的坏体验
+    try { out.cred = await d.edu.credStatus(); }
+    catch (e) { out.credThrew = String((e && e.message) || e); }
+
+    // 登录入口同样要过 sanitizeUrl：不能因为是「登录」就绕过协议校验
+    try { out.loginBadUrl = await d.edu.login({ url: 'javascript:alert(1)', username: 'u', password: 'p' }); }
+    catch (e) { out.loginBadUrlThrew = String((e && e.message) || e); }
+
+    // 清除账号在没存过的时候也该是幂等成功
+    try { out.credClear = await d.edu.credClear(); }
+    catch (e) { out.credClearThrew = String((e && e.message) || e); }
 
     // sanitizeUrl 安全边界：这些都必须被拒绝（返回 false）
     out.reject = {};
@@ -209,7 +230,8 @@ try {
   console.log('\n=== 2. preload 注入（contextBridge）===');
   check('window.CourseForgeDesktop 存在', info.hasBridge === true);
   check('isDesktop === true', info.isDesktop === true);
-  check('暴露了 edu.{open,grab,close} 三个动作', info.hasEduApi === true);
+  check('暴露了 edu.{open,grab,close}', info.hasEduApi === true);
+  check('暴露了 edu.{login,courses,credStatus,credClear}', info.hasLoginApi === true);
   check('electronVersion 非空', !!info.electronVersion, 'Electron ' + info.electronVersion + ' / ' + info.platform);
 
   console.log('\n=== 3. IPC 往返（主进程真的收到了）===');
@@ -218,6 +240,24 @@ try {
     g && g.ok === false && g.reason === 'nowindow',
     g ? JSON.stringify(g) : ('抛异常: ' + info.grabThrew));
 
+  const c = info.coursesNoWindow;
+  check('edu.courses() 无窗口时返回结构化原因',
+    c && c.ok === false && c.reason === 'nowindow',
+    c ? JSON.stringify(c) : ('抛异常: ' + info.coursesThrew));
+
+  const cr = info.cred;
+  check('edu.credStatus() 返回账号存储状态（不含密码字段）',
+    !!cr && typeof cr.available === 'boolean' && typeof cr.saved === 'boolean'
+      && !Object.prototype.hasOwnProperty.call(cr, 'password'),
+    cr ? JSON.stringify(cr) : ('抛异常: ' + info.credThrew));
+  // 这一条必须在真机上验：safeStorage 不可用时，「记住账号」会静默存不上
+  check('本机 safeStorage（DPAPI）可用，账号能加密保存',
+    !!cr && cr.available === true,
+    cr && cr.available === false ? '不可用 —— 「记住账号」会保不住' : '');
+
+  check('edu.credClear() 幂等成功', !!info.credClear && info.credClear.ok === true,
+    info.credClear ? JSON.stringify(info.credClear) : ('抛异常: ' + info.credClearThrew));
+
   console.log('\n=== 4. sanitizeUrl 安全边界（真实调用链）===');
   const bads = ['javascript:alert(1)', 'file:///C:/Windows/win.ini', 'data:text/html,x',
     'ftp://example.com/x', 'about:blank'];
@@ -225,12 +265,16 @@ try {
     const got = info.reject ? info.reject[b] : undefined;
     check('拒绝 ' + b, got === false, '返回 ' + JSON.stringify(got));
   }
+  // 登录入口不能成为绕过点：走的是同一个 sanitizeUrl
+  check('edu.login() 同样拒绝 javascript: 网址',
+    !!info.loginBadUrl && info.loginBadUrl.ok === false && info.loginBadUrl.reason === 'badurl',
+    info.loginBadUrl ? JSON.stringify(info.loginBadUrl) : ('抛异常: ' + info.loginBadUrlThrew));
 
   console.log('\n=== 5. 数据持久化 ===');
   check('localStorage 可读写', info.localStorage === true);
 
   console.log('\n--- 汇总 ---');
-  const total = 5 + bads.length + 6;
+  const total = 5 + bads.length + 11;
   console.log((failures.length === 0 ? '✅ 全部通过' : '❌ 失败 ' + failures.length + ' 项')
     + '（共 ' + total + ' 项检查）');
   if (failures.length) console.log('失败项：\n  - ' + failures.join('\n  - '));

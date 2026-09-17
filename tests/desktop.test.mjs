@@ -151,13 +151,37 @@ D('抓取脚本：结果能被教务解析器接住（端到端）', () => {
 
 // ==================== 主进程与 preload 的一致性 ====================
 
-test('main.js：注册了三个教务 IPC 通道，且都在 whenReady 之前注册', () => {
+test('main.js：注册了全部教务 IPC 通道，且都在 whenReady 之后注册', () => {
   assert.ok(/ipcMain\.handle\(\s*'edu:open'/.test(MAIN_SRC));
   assert.ok(/ipcMain\.handle\(\s*'edu:grab'/.test(MAIN_SRC));
   assert.ok(/ipcMain\.handle\(\s*'edu:close'/.test(MAIN_SRC));
+  // 自动登录与取课表
+  assert.ok(/ipcMain\.handle\(\s*'edu:login'/.test(MAIN_SRC));
+  assert.ok(/ipcMain\.handle\(\s*'edu:courses'/.test(MAIN_SRC));
+  // 账号存储状态：只回状态，不回密码
+  assert.ok(/ipcMain\.handle\(\s*'edu:cred-status'/.test(MAIN_SRC));
+  assert.ok(/ipcMain\.handle\(\s*'edu:cred-clear'/.test(MAIN_SRC));
   // handle 必须在 app ready 之后注册（在模块顶层注册会在部分平台报错）
   assert.ok(/app\.whenReady\(\)\.then\(\(\) => \{[\s\S]*registerEduIpc\(\)/.test(MAIN_SRC),
     'registerEduIpc() 应在 app.whenReady() 回调里调用');
+  assert.ok(/app\.whenReady\(\)\.then\(\(\) => \{[\s\S]*registerAutoLoginIpc\(\)/.test(MAIN_SRC),
+    'registerAutoLoginIpc() 同样应在 whenReady 回调里调用');
+});
+
+test('main.js：菜单发现的地址必须是站内 /jwglxt/ 路径（防被篡改的页面带跑会话）', () => {
+  // 发现逻辑来自教务页面本身，属于「外部输入」：只允许站内绝对路径，
+  // 且必须拼到已登录的 origin 上，不能拿页面给的完整 URL 直接请求
+  assert.ok(/\/\^\\\/jwglxt\\\/\/\.test\(url\)/.test(MAIN_SRC),
+    'buildCandidates 必须用 /^\\/jwglxt\\// 约束发现的路径');
+});
+
+test('main.js：账号只交给人家的主进程，密码不写日志', () => {
+  // 凭据存储走 safeStorage，且不把密码拼进任何 console.log
+  assert.ok(/createCredStore\(/.test(MAIN_SRC));
+  const logs = [...MAIN_SRC.matchAll(/console\.log\(([^\n]*)/g)].map((m) => m[1]);
+  for (const line of logs) {
+    assert.ok(!/password/.test(line), '日志里不能出现 password：' + line);
+  }
 });
 
 test('main.js / preload.js：安全基线不变（contextIsolation、无 nodeIntegration）', () => {
@@ -181,5 +205,8 @@ test('preload.js：不把 ipcRenderer 整个暴露给页面', async () => {
     '不能让页面直接拿到 ipcRenderer');
   assert.ok(!/\bipcRenderer:\s*ipcRenderer\b/.test(preload));
   const invokes = [...preload.matchAll(/ipcRenderer\.invoke\(\s*'([\w:-]+)'/g)].map((m) => m[1]);
-  assert.deepEqual(invokes.sort(), ['edu:close', 'edu:grab', 'edu:open']);
+  assert.deepEqual(invokes.sort(), [
+    'edu:close', 'edu:courses', 'edu:cred-clear', 'edu:cred-status',
+    'edu:grab', 'edu:login', 'edu:open'
+  ], '暴露的通道清单变化必须是有意为之：每多一个通道就多一个被页面调用的入口');
 });

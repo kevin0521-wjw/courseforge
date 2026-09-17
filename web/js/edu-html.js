@@ -685,8 +685,204 @@
     return out;
   }
 
+  // ==================== 结构化接口：正方 jwglxt 的课表 JSON ====================
+
+  /**
+   * 相比解析 HTML，接口数据是有字段名的，本该更简单 —— 真正的麻烦是**字段名不统一**：
+   * 正方各版本、各校定制都会改字段（xqj/xq、jcs/jc/jcor、zcd/zcmc…）。
+   * 所以这里按「同义词组」取值，命中第一个非空值就用。
+   * 宁可多列几个别名，也不要因为学校换了个字段名就整门课凭空消失。
+   */
+  var ZF_FIELDS = {
+    name: ['kcmc', 'kcmcDisplay', 'jxbmc', 'kcb', 'courseName'],
+    teacher: ['xm', 'jsxm', 'xmDisplay', 'teacherName'],
+    location: ['cdmc', 'jxdd', 'cdmcDisplay', 'roomName'],
+    campus: ['xqmc', 'campusName'],
+    dayName: ['xqjmc', 'xqjmcDisplay', 'xingqi', 'weekName'],
+    dayNum: ['xqj', 'xq', 'weekDay'],
+    sections: ['jcs', 'jc', 'jcor', 'jcs2', 'sections'],
+    weeks: ['zcd', 'zcmc', 'zcmcDisplay', 'zhouci', 'weeks']
+  };
+
+  /** 在若干同义字段名里取第一个非空值（统一转成去空白的字符串） */
+  function pickField(obj, keys) {
+    for (var i = 0; i < keys.length; i++) {
+      var v = obj[keys[i]];
+      if (v == null) continue;
+      var s = String(v).replace(/\s+/g, ' ').trim();
+      if (s) return s;
+    }
+    return '';
+  }
+
+  /**
+   * 从接口响应里掏出课表行数组。
+   * 不同版本会把 kbList 塞在不同外壳里（顶层 / data 里 / 直接就是数组），
+   * 甚至换个名字（xskbList）。这里宽容地都认，认不出再让上层报错。
+   * 顺带取回 xqjmcMap（{1:'星期一'}），它是星期字段缺失时最可靠的补位来源。
+   */
+  function extractKbRows(obj) {
+    var rows = [];
+    var dayMap = null;
+
+    function push(v) {
+      if (Object.prototype.toString.call(v) === '[object Array]') {
+        for (var i = 0; i < v.length; i++) rows.push(v[i]);
+      }
+    }
+    function collect(o) {
+      if (!o || typeof o !== 'object') return;
+      push(o.kbList);
+      push(o.xskbList);
+      push(o.kbListXq);
+      if (!dayMap && o.xqjmcMap && typeof o.xqjmcMap === 'object') dayMap = o.xqjmcMap;
+    }
+
+    if (Object.prototype.toString.call(obj) === '[object Array]') {
+      push(obj);
+    } else {
+      collect(obj);
+      if (obj && typeof obj === 'object') collect(obj.data);
+    }
+    return { rows: rows, dayMap: dayMap };
+  }
+
+  /** 星期：先信数字字段，再按名称文本认，最后拿接口给的映射表反查 */
+  function dayFromRow(row, dayMap) {
+    var n = Number(pickField(row, ZF_FIELDS.dayNum));
+    if (n >= 1 && n <= 7) return n;
+
+    var name = pickField(row, ZF_FIELDS.dayName);
+    if (!name) return null;
+    var byText = CP.extractDays(name);
+    if (byText.length) return byText[0];
+
+    if (dayMap) {
+      for (var k in dayMap) {
+        if (!Object.prototype.hasOwnProperty.call(dayMap, k)) continue;
+        if (String(dayMap[k]).replace(/\s+/g, '') === name.replace(/\s+/g, '')) {
+          var kn = Number(k);
+          if (kn >= 1 && kn <= 7) return kn;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** 节次：复用读表格那一套（'第1-2节'、'1-2'、'3,4' 都能读） */
+  function sectionsFromRow(row, opts) {
+    var str = pickField(row, ZF_FIELDS.sections);
+    if (!str) return null;
+    var sec = readSections(str, opts && opts.sectionTimes);
+    if (sec) return sec;
+    var nums = String(str).match(/\d{1,2}/g);
+    if (nums && nums.length) {
+      var arr = [];
+      for (var i = 0; i < nums.length; i++) arr.push(Number(nums[i]));
+      return { start: Math.min.apply(null, arr), end: Math.max.apply(null, arr) };
+    }
+    return null;
+  }
+
+  /** 周次：复用文本导入的周次解析（含单双周） */
+  function weeksFromRow(row) {
+    var str = pickField(row, ZF_FIELDS.weeks);
+    if (!str) return null;
+    return CP.parseWeeksSpec(str);
+  }
+
+  /** 地点：正方把校区（xqmc）与场地（cdmc）分开给，拼成一个可读地点 */
+  function joinLocation(campus, room) {
+    if (!campus) return room;
+    if (!room) return campus;
+    if (room.indexOf(campus) === 0) return room; // 场地名里已经带了校区，别拼成「宝山校区 宝山校区A101」
+    return campus + ' ' + room;
+  }
+
+  /**
+   * 解析正方课表接口的 JSON
+   * @param {string|object} payload 接口返回的原始文本或已解析对象
+   * @param {object} [opts] { sectionTimes, totalWeeks }
+   * @returns {{ items: Array, warnings: Array<string>, layout: string, tables: number }}
+   *   layout 固定为 'api'，与 HTML 版面的 'grid'/'list' 区分开
+   */
+  function parseZfKbList(payload, opts) {
+    opts = opts || {};
+    var warnings = [];
+    var obj = payload;
+
+    if (typeof payload === 'string') {
+      try {
+        obj = JSON.parse(payload);
+      } catch (e) {
+        // 最常见的原因是会话过期，接口把登录页 HTML 当 200 返回了
+        warnings.push('接口返回的不是合法 JSON，多半是登录已过期（被重定向到登录页）');
+        return { items: [], warnings: warnings, layout: 'none', tables: 0 };
+      }
+    }
+
+    var got = extractKbRows(obj);
+    if (!got.rows.length) {
+      warnings.push('接口返回里没有课表数据（kbList 为空或字段名不认识）');
+      return { items: [], warnings: warnings, layout: 'none', tables: 0 };
+    }
+
+    var items = [];
+    var skipped = 0;
+    for (var i = 0; i < got.rows.length; i++) {
+      var row = got.rows[i];
+      if (!row || typeof row !== 'object') { skipped++; continue; }
+
+      var name = pickField(row, ZF_FIELDS.name);
+      if (!name) { skipped++; continue; }
+
+      var day = dayFromRow(row, got.dayMap);
+      // 没有星期就没法摆进课表。猜一个位置比留空更糟 —— 用户会以为课真在那天
+      if (!day) { skipped++; continue; }
+
+      var sec = sectionsFromRow(row, opts);
+      var teacher = pickField(row, ZF_FIELDS.teacher);
+      var location = joinLocation(pickField(row, ZF_FIELDS.campus), pickField(row, ZF_FIELDS.location));
+
+      var rawParts = [name];
+      if (teacher) rawParts.push(teacher);
+      var wRaw = pickField(row, ZF_FIELDS.weeks);
+      if (wRaw) rawParts.push(wRaw);
+      var sRaw = pickField(row, ZF_FIELDS.sections);
+      if (sRaw) rawParts.push(sRaw);
+      if (location) rawParts.push(location);
+
+      items.push({
+        name: name,
+        teacher: teacher,
+        location: location,
+        day: day,
+        startSection: sec ? sec.start : null,
+        endSection: sec ? sec.end : null,
+        weeks: weeksFromRow(row),
+        raw: rawParts.join(' / ')
+      });
+    }
+
+    if (skipped) {
+      warnings.push('有 ' + skipped + ' 条记录缺少课程名或星期信息，已跳过（可在确认表里手工补录）');
+    }
+    if (!items.length) {
+      warnings.push('没有一条记录能定位到星期，无法导入');
+    }
+
+    return {
+      items: dedupe(items),
+      warnings: warnings,
+      layout: items.length ? 'api' : 'none',
+      tables: 0
+    };
+  }
+
   return {
     parseEduHtml: parseEduHtml,
+    parseZfKbList: parseZfKbList,
+    extractKbRows: extractKbRows,
     extractTables: extractTables,
     parseGrid: parseGrid,
     cellText: cellText,

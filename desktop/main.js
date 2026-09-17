@@ -6,8 +6,10 @@
  * 浏览器里 JS 受同源策略限制拿不到教务系统页面，主进程没有这个限制，
  * 因此由主进程开一个窗口让用户自己登录，再按需把当前页 HTML 交回渲染进程解析。
  */
-const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, shell, ipcMain, safeStorage } = require('electron');
 const path = require('path');
+const EduLogin = require('./edu-login.js');
+const { createCredStore } = require('./cred-store.js');
 
 // ==================== 安全模式（受限环境启动）====================
 /**
@@ -143,33 +145,9 @@ const GRAB_SCRIPT = `(function () {
 function openEduWindow(url) {
   const target = sanitizeUrl(url);
   if (!target) return false;
-
-  if (eduWindow && !eduWindow.isDestroyed()) {
-    eduWindow.loadURL(target);
-    eduWindow.focus();
-    return true;
-  }
-
-  eduWindow = new BrowserWindow({
-    width: 1100,
-    height: 800,
-    minWidth: 420,
-    minHeight: 480,
-    title: '登录教务系统（CourseForge）',
-    autoHideMenuBar: true,
-    // 独立的持久化分区：登录状态可以保留，但与本应用主窗口的 cookie 隔离
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      partition: 'persist:courseforge-edu',
-      spellcheck: false
-    }
-  });
-
-  eduWindow.loadURL(target);
-  eduWindow.on('closed', () => {
-    eduWindow = null;
-  });
+  // 窗口创建统一走 ensureEduWindow：手动登录与自动登录必须共用同一个窗口和同一份
+  // cookie 分区，否则会出现「一个窗口登录了、另一个窗口还是登录页」的分裂状态
+  ensureEduWindow(target);
   return true;
 }
 
@@ -196,6 +174,324 @@ function registerEduIpc() {
   ipcMain.handle('edu:close', () => {
     if (eduWindow && !eduWindow.isDestroyed()) eduWindow.close();
     return true;
+  });
+}
+
+// ==================== 教务账号存储（本机加密）====================
+
+let credStore = null;
+
+/**
+ * 凭据存储按需创建：safeStorage 在部分平台要等 app ready 才可用，
+ * 放在模块顶层初始化迟早会踩到「还没 ready 就调用」的坑。
+ */
+function getCredStore() {
+  if (!credStore) {
+    credStore = createCredStore({
+      file: path.join(app.getPath('userData'), 'edu-credentials.json'),
+      safeStorage: safeStorage,
+      log: (m) => console.log('[CourseForge] ' + m)
+    });
+  }
+  return credStore;
+}
+
+// ==================== 教务系统自动登录 ====================
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 加载页面并等它稳定；超时或失败返回 false，绝不抛出去炸掉 IPC */
+async function loadUrlWithTimeout(wc, url, timeoutMs) {
+  let timer = null;
+  const beat = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const load = wc.loadURL(url).then(() => true)['catch'](() => false);
+  const ok = await Promise.race([load, beat]);
+  if (timer) clearTimeout(timer);
+  return ok;
+}
+
+/**
+ * 轮询一段脚本直到 decide 返回真值。
+ * 之所以到处都要轮询：页面的 JS 是异步的（登录是 ajax、课表是 ajax 渲染），
+ * 用固定 sleep 猜时间只有两种结果 —— 要么白等，要么在慢网下失败。
+ * decide 返回 null/false 表示继续等。
+ */
+async function pollScript(wc, script, decide, opts) {
+  const timeoutMs = (opts && opts.timeoutMs) || 10000;
+  const intervalMs = (opts && opts.intervalMs) || 400;
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      last = await wc.executeJavaScript(script, true);
+    } catch (e) {
+      // 页面正在跳转时执行上下文会被销毁，这里属于正常现象，等下一轮
+      last = null;
+    }
+    const decision = decide(last);
+    if (decision) return { value: last, decision: decision };
+    await sleep(intervalMs);
+  }
+  return { value: last, decision: null };
+}
+
+/**
+ * 确保教务窗口存在。
+ * 保留原 openEduWindow 的行为（已有窗口就导航并前置），这样「打开教务系统并登录」
+ * 与自动登录共用同一个窗口和同一份 cookie 分区，不会出现「两个窗口各自登录」的混乱。
+ */
+function ensureEduWindow(target) {
+  if (eduWindow && !eduWindow.isDestroyed()) {
+    if (target) eduWindow.loadURL(target);
+    eduWindow.focus();
+    return eduWindow;
+  }
+
+  eduWindow = new BrowserWindow({
+    width: 1100,
+    height: 800,
+    minWidth: 420,
+    minHeight: 480,
+    title: '登录教务系统（CourseForge）',
+    autoHideMenuBar: true,
+    // 独立的持久化分区：登录状态可以保留，但与本应用主窗口的 cookie 隔离
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      partition: 'persist:courseforge-edu',
+      spellcheck: false
+    }
+  });
+
+  if (target) eduWindow.loadURL(target);
+  eduWindow.on('closed', () => {
+    eduWindow = null;
+  });
+  return eduWindow;
+}
+
+/**
+ * 自动登录。
+ *
+ * 流程刻意简单：打开登录页 → 等表单就绪 → 填 #yhm/#mm → 点 #dl → 盯状态。
+ * 加密密码、csrftoken 全部交给学校页面自己的 login.js（原因见 edu-login.js 顶部注释）。
+ * 这里唯一需要小心的是**别把密码写进日志、别把它返回给渲染进程**。
+ */
+async function autoLogin(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const target = sanitizeUrl(p.url);
+  if (!target) return { ok: false, reason: 'badurl', message: '教务系统网址不正确' };
+
+  const loginUrl = EduLogin.loginUrlFrom(target);
+  if (!loginUrl) return { ok: false, reason: 'badurl', message: '教务系统网址不正确' };
+
+  let username = typeof p.username === 'string' ? p.username.trim() : '';
+  let password = typeof p.password === 'string' ? p.password : '';
+  const remember = !!p.remember;
+  const store = getCredStore();
+
+  if (!username || !password) {
+    const stored = store.read();
+    if (stored) {
+      if (!username) username = stored.username;
+      // 只在用户名与已存账号一致时复用密码：否则用户换了账号，
+      // 会拿旧账号的密码去撞新账号 —— 白送一次失败计数
+      if (!password && username === stored.username) password = stored.password;
+    }
+  }
+  if (!username) return { ok: false, reason: 'nocred', message: '请填写教务系统用户名' };
+  if (!password) {
+    return { ok: false, reason: 'nocred', message: '请填写密码；想免输入就先勾「记住账号」登录成功一次' };
+  }
+
+  const win = ensureEduWindow(loginUrl);
+  const wc = win.webContents;
+  await loadUrlWithTimeout(wc, loginUrl, 25000);
+
+  /** 登录成功后的收尾：记住账号（可选）+ 回报结果 */
+  const finishOk = (extra) => {
+    let remembered = false;
+    let rememberError = '';
+    if (remember) {
+      const r = store.save({ username: username, password: password });
+      remembered = !!r.ok;
+      rememberError = r.ok ? '' : r.reason;
+    }
+    return Object.assign({ ok: true, url: wc.getURL(), remembered: remembered, rememberError: rememberError }, extra || {});
+  };
+
+  // 会话还在的话登录页会直接跳走 —— 这种情况没必要再填表
+  if (!EduLogin.isLoginPage(wc.getURL())) {
+    return finishOk({ alreadyLoggedIn: true });
+  }
+
+  // 等页面自己的 login.js 把事件绑上（DOM 出来 ≠ 事件绑好）
+  const form = await pollScript(wc, '!!document.getElementById("dl")', (v) => v === true,
+    { timeoutMs: 12000, intervalMs: 200 });
+  if (!form.decision) {
+    return { ok: false, reason: 'noform', message: '等了 12 秒没等到登录表单，请确认网址是不是教务系统登录页' };
+  }
+
+  let filled = null;
+  try {
+    filled = await wc.executeJavaScript(EduLogin.buildFillScript(username, password), true);
+  } catch (err) {
+    return { ok: false, reason: 'error', message: '填表失败：' + String((err && err.message) || err) };
+  }
+  if (!filled || !filled.ok) {
+    if (filled && filled.reason === 'captcha') {
+      return { ok: false, reason: 'captcha', message: '教务系统这次要验证码，请在弹窗里手动输完再点登录' };
+    }
+    return { ok: false, reason: 'noform', message: '页面上没找到用户名/密码输入框（登录页可能改版了）' };
+  }
+
+  // 登录是 ajax，靠页面自己的信号判定结果，不靠 sleep 猜
+  const polled = await pollScript(wc, EduLogin.buildStatusScript(), (st) => {
+    const c = EduLogin.classifyStatus(st);
+    return c.state === 'pending' ? null : c;
+  }, { timeoutMs: 45000, intervalMs: 600 });
+
+  const decision = polled.decision
+    || { state: 'timeout', message: '等登录结果超时了，请到教务窗口里看看到哪一步' };
+  if (decision.state !== 'success') {
+    return { ok: false, reason: decision.state, message: decision.message, url: wc.getURL() };
+  }
+  return finishOk();
+}
+
+/**
+ * 取课表：先试结构化接口，不行再退回抓页面。
+ *
+ * 顺序不能反 —— 结构化数据字段明确、不需要靠版面启发式猜，
+ * 而抓 HTML 要面对「课表是 ajax 渲染的、还可能带装饰性表格」这些变数。
+ * 只有接口这条路走不通（学校定制/升级改了路径）才退回 HTML。
+ */
+async function fetchTimetable() {
+  if (!eduWindow || eduWindow.isDestroyed()) {
+    return { ok: false, reason: 'nowindow', message: '还没有打开教务系统窗口' };
+  }
+  const wc = eduWindow.webContents;
+  const cur = wc.getURL();
+  if (!cur || EduLogin.isLoginPage(cur)) {
+    return { ok: false, reason: 'nologin', message: '还没登录教务系统，请先自动登录或手动登录' };
+  }
+
+  let origin;
+  try {
+    origin = new URL(cur).origin;
+  } catch (e) {
+    return { ok: false, reason: 'badurl', message: '教务窗口当前地址不正常：' + cur };
+  }
+
+  // 先从左侧菜单发现真实的课表入口（各校菜单名不同，硬编码迟早会失效）
+  let discovered = null;
+  try {
+    discovered = await wc.executeJavaScript(EduLogin.buildMenuProbeScript(), true);
+  } catch (e) {
+    discovered = null;
+  }
+
+  const candidates = buildCandidates(discovered);
+
+  // 第一轮：数据接口
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    if (!c.api) continue;
+    let res = null;
+    try {
+      res = await wc.executeJavaScript(
+        EduLogin.buildFetchScript(c.api, EduLogin.TIMETABLE_BODY), true);
+    } catch (e) {
+      res = null;
+    }
+    if (res && res.status === 200 && EduLogin.hasKbList(res.body)) {
+      return { ok: true, source: 'api', candidate: c.name, json: res.body, pageUrl: c.page ? origin + c.page : '' };
+    }
+  }
+
+  // 第二轮：抓课表页 HTML
+  for (let j = 0; j < candidates.length; j++) {
+    const c2 = candidates[j];
+    if (!c2.page) continue;
+    await loadUrlWithTimeout(wc, origin + c2.page, 25000);
+    // 等表格真的渲染出来（课表是 ajax 渲染的，加载完成 ≠ 有表格）
+    const ready = await pollScript(wc, 'document.querySelectorAll("table").length',
+      (v) => typeof v === 'number' && v > 0, { timeoutMs: 15000, intervalMs: 500 });
+    if (!ready.decision) continue;
+
+    let html = '';
+    try {
+      html = await wc.executeJavaScript(GRAB_SCRIPT, true);
+    } catch (e) {
+      html = '';
+    }
+    if (html && /<table/i.test(html)) {
+      return { ok: true, source: 'html', candidate: c2.name, html: html, pageUrl: wc.getURL() };
+    }
+  }
+
+  return {
+    ok: false,
+    reason: 'notfound',
+    message: '自动找课表没成功。请手动在教务窗口里打开课表页面，再点「读取当前页课表」'
+  };
+}
+
+/**
+ * 候选入口：菜单里发现的 + 内置兜底。
+ *
+ * ⚠️ 安全要点：菜单发现的结果**只接受站内 `/jwglxt/` 开头的相对路径**。
+ * 否则一个被篡改的教务页面只要在菜单里塞个外链，就能让本应用带着会话去请求任意地址。
+ */
+function buildCandidates(discovered) {
+  const out = [];
+  const seen = {};
+
+  const add = (c) => {
+    const key = (c.api || '') + '|' + (c.page || '');
+    if (seen[key]) return;
+    seen[key] = 1;
+    out.push(c);
+  };
+
+  if (Object.prototype.toString.call(discovered) === '[object Array]') {
+    for (let i = 0; i < discovered.length; i++) {
+      const d = discovered[i];
+      const url = typeof d === 'string' ? d : (d && d.url);
+      if (typeof url !== 'string' || !/^\/jwglxt\//.test(url)) continue;
+      add({ name: (d && d.text) || '菜单发现', page: url, api: guessApiPath(url) });
+    }
+  }
+
+  for (let k = 0; k < EduLogin.TIMETABLE_CANDIDATES.length; k++) {
+    add(EduLogin.TIMETABLE_CANDIDATES[k]);
+  }
+  return out;
+}
+
+/**
+ * 从课表页路径推数据接口路径。
+ * 只认已知的命名规律（页面 `_cxXsgrkb` ↔ 数据 `_cxXsKb`），推不出来就不猜 ——
+ * 瞎猜出来的接口 404 只会白跑一趟，还会污染日志。
+ */
+function guessApiPath(pageUrl) {
+  const page = String(pageUrl == null ? '' : pageUrl);
+  if (/xskbcx_cxXsgrkb\.html/.test(page)) {
+    return page.replace('xskbcx_cxXsgrkb.html', 'xskbcx_cxXsKb.html');
+  }
+  return null;
+}
+
+function registerAutoLoginIpc() {
+  ipcMain.handle('edu:login', (event, payload) => autoLogin(payload));
+  ipcMain.handle('edu:courses', () => fetchTimetable());
+
+  ipcMain.handle('edu:cred-status', () => getCredStore().status());
+  ipcMain.handle('edu:cred-clear', () => {
+    const ok = getCredStore().clear();
+    return { ok: ok, status: getCredStore().status() };
   });
 }
 
@@ -241,6 +537,7 @@ function buildMenu() {
 
 app.whenReady().then(() => {
   registerEduIpc();
+  registerAutoLoginIpc();
   buildMenu();
   createWindow();
 

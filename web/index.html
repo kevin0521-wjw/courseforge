@@ -247,14 +247,39 @@
           <div id="eduDesktopPane" hidden>
             <label class="field">
               <span class="field-label">教务系统网址</span>
-              <input type="text" id="eduUrl" placeholder="例如 jwb.shu.edu.cn" autocomplete="off">
+              <input type="text" id="eduUrl" placeholder="例如 jwxt.shu.edu.cn" autocomplete="off">
             </label>
+
+            <div class="field-row">
+              <label class="field">
+                <span class="field-label">用户名（学号）</span>
+                <input type="text" id="eduUser" placeholder="学号" autocomplete="off">
+              </label>
+              <label class="field">
+                <span class="field-label">密码</span>
+                <input type="password" id="eduPass" placeholder="仅用于登录" autocomplete="new-password">
+              </label>
+            </div>
+            <label class="field-check">
+              <input type="checkbox" id="eduRemember">
+              <span>记住账号（用本机账户密钥加密保存，换台电脑解不开）</span>
+            </label>
+            <p class="hint" id="eduCredState">账号未保存。登录成功后如勾选「记住账号」，下次可以只点一下按钮。</p>
+
             <div class="edu-actions">
-              <button class="btn btn-primary" data-action="edu-open">打开教务系统并登录</button>
+              <button class="btn btn-primary" data-action="edu-autologin">一键登录并取课表</button>
+              <button class="btn btn-ghost" data-action="edu-fetch">重新取课表</button>
+              <button class="btn btn-ghost" data-action="edu-forget">忘记账号</button>
+            </div>
+
+            <div class="edu-actions">
+              <button class="btn btn-ghost" data-action="edu-open">打开教务系统窗口</button>
               <button class="btn btn-ghost" data-action="edu-grab">读取当前页课表</button>
               <button class="btn btn-ghost" data-action="edu-close-window">关闭教务窗口</button>
             </div>
-            <p class="hint">登录在独立窗口里完成，CourseForge 不接触你的账号密码；只有你点「读取当前页课表」时才读取那一页的内容。登录后请先进入课表页面再点读取。</p>
+
+            <p class="hint">「一键登录」由主进程在独立窗口里代填表单，密码不会留在网页里，也不会存进浏览器存储；登录状态保存在该窗口，下次通常免登录。学校若开启验证码，会自动退回手动登录。「重新取课表」不需要账号，适合已经登录的情况。</p>
+            <p class="hint">取课表优先走教务系统的数据接口（字段明确、识别最准），接口不可用时才退回读取课表页面。两种情况都会先进下方确认表。</p>
           </div>
           <!-- 网页版：浏览器跨域拿不到教务系统页面，引导走粘贴 -->
           <div id="eduWebHint">

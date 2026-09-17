@@ -31,6 +31,9 @@ const FILES = {
   parser: path.join(ROOT, 'web/js/parser.js'),
   layout: path.join(ROOT, 'web/js/pdf-layout.js'),
   importer: path.join(ROOT, 'web/js/importer.js'),
+  eduHtml: path.join(ROOT, 'web/js/edu-html.js'),
+  eduLogin: path.join(ROOT, 'desktop/edu-login.js'),
+  credStore: path.join(ROOT, 'desktop/cred-store.js'),
   sw: path.join(ROOT, 'web/sw.js'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
@@ -305,6 +308,67 @@ const ONLY = process.env.MUT_ONLY !== undefined ? Number(process.env.MUT_ONLY) :
         '});'
       ].join('\n');
       return s.replace(seg, replaced);
+    }
+  });
+}
+
+// ==================== 教务直连：自动登录与账号存储 ====================
+
+// 19) 填表时不用 JSON.stringify 转义，改成裸拼字符串。
+//     这是最危险的一处：密码里一个引号就会把脚本拼断（静默失败，最难查），
+//     而恶意用户名能直接在教务页面里执行代码。护栏必须能挡住。
+{
+  mutations.push({
+    name: '自动登录：用户名/密码不再转义，裸拼进脚本',
+    file: 'eduLogin',
+    apply: (s) => {
+      const seg = between(
+        s,
+        "  const u = JSON.stringify(String(username == null ? '' : username));",
+        "  const p = JSON.stringify(String(password == null ? '' : password));"
+      );
+      if (!seg) return s;
+      const replaced = [
+        '  const u = \'"\' + String(username == null ? \'\' : username) + \'"\'; // MUTANT',
+        '  const p = \'"\' + String(password == null ? \'\' : password) + \'"\';'
+      ].join('\n');
+      return s.replace(seg, replaced);
+    }
+  });
+}
+
+// 20) 没有星期信息的记录直接塞到周一（而不是跳过）。
+//     这个降级的后果很隐蔽：课表看起来一切正常，但课被摆到了错误的一天，
+//     用户照着走会真的跑错教室 —— 属于「看起来能用」的假成功。
+{
+  mutations.push({
+    name: '课表接口解析：缺星期不再跳过，默认塞到周一',
+    file: 'eduHtml',
+    apply: (s) => {
+      const seg = between(
+        s,
+        '      var day = dayFromRow(row, got.dayMap);',
+        '      if (!day) { skipped++; continue; }'
+      );
+      if (!seg) return s;
+      return s.replace(seg, [
+        '      var day = dayFromRow(row, got.dayMap); // MUTANT',
+        '      if (!day) day = 1;'
+      ].join('\n'));
+    }
+  });
+}
+
+// 21) 加密能力不可用时降级成明文保存。
+//     用户永远不会知道自己的密码躺在硬盘上 —— 隐私事故的典型形态。
+{
+  mutations.push({
+    name: '账号存储：加密不可用时降级成明文保存',
+    file: 'credStore',
+    apply: (s) => {
+      const anchor = "    if (!available()) return { ok: false, reason: 'noenc' };";
+      if (!s.includes(anchor)) return s;
+      return s.replace(anchor, '    if (!available()) return { ok: true }; // MUTANT');
     }
   });
 }
