@@ -111,6 +111,18 @@ npm install              # 安装 Electron（首次较慢）
 npm start                # 启动桌面应用
 ```
 
+**启动不起来时（安全模式）**：如果应用在无显卡 / 容器 / 受限沙箱环境里闪退（典型报错
+是 `GPU process isn't usable. Goodbye.`），用安全模式启动 —— 它会禁用硬件加速并关掉
+Chromium 自带沙箱：
+
+```bash
+cd desktop
+npx electron . --safe-mode            # 或设环境变量 COURSEFORGE_SAFE_MODE=1
+```
+
+> ⚠️ 安全模式会关掉 Chromium 的沙箱隔离。它只在「本机加载本地 `file://` 页面、不访问
+> 外部网页内容」这个前提下可接受，**普通桌面环境请不要用**，保持默认即可。
+
 ### 打包桌面安装包（可选）
 
 ```bash
@@ -213,7 +225,9 @@ npm run verify           # 测试 + 静态检查 + 变异测试 + 打包冒烟�
 > `check:desktop` 则验证静态检查做不到的部分 —— preload 是否真的注入了
 > `window.CourseForgeDesktop`、`edu:*` IPC 是否真的能往返、以及 `sanitizeUrl`
 > 在真实调用链上是否真的拦得住 `javascript:` / `file://` 这类协议（16 项断言；
-> 需先在 `desktop/` 里 `npm install`）。
+> 需先在 `desktop/` 里 `npm install`）。它默认用**产品默认配置**启动（即用户双击
+> 时的真实路径）；无 GPU / 容器等受限环境起不来时，加 `SAFE_MODE=1` 走安全模式重试：
+> `SAFE_MODE=1 npm run check:desktop`。
 
 > **运行时零依赖，依赖只在测试层**：`jsdom` 仅用于驱动真实 `index.html` 跑全流程测试，未安装时这些用例自动跳过（不阻断）。交付产物（网页版 / 单文件版 / 桌面端）不依赖任何 npm 包。
 

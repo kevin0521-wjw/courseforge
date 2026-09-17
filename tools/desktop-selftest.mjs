@@ -8,19 +8,20 @@
  *   `sanitizeUrl` 在真实调用链上是否真的拦得住 `javascript:` 这类协议。
  *   这些只有把 Electron 真正启动一次才知道。
  *
- * 沙箱/受限环境下三个必需项（都是实测踩出来的，缺一不可）：
- *   1) `ELECTRON_RUN_AS_NODE` 必须清掉，否则 Electron 以 Node REPL 模式跑，永远无窗口；
- *   2) `--in-process-gpu --disable-gpu` —— 否则 GPU 进程反复启动失败，最终
- *      `FATAL:gpu_data_manager_impl_private.cc GPU process isn't usable. Goodbye.`
- *      主进程 1.5 秒内就退出（此时会留下**孤儿渲染进程**，CDP 居然还能连上，
- *      极易误判成"跑起来了"——所以本脚本会额外校验主进程是否仍存活）；
- *   3) `--no-sandbox` —— **最关键也最隐蔽的一个**。少了它会得到一个极难诊断的状态：
- *      主进程活着、`/json/list` 也能列出 page target、WebSocket 甚至能连上，
- *      但**发出的 CDP 调用永远收不到任何响应**（渲染进程实际已死）。
- *      加上它之后同一个页面的 title 立刻从空串变成「课表工坊 CourseForge」。
+ * 启动方式：
+ *   1) `ELECTRON_RUN_AS_NODE` 必须清掉，否则 Electron 会退化成 Node REPL，永远无窗口；
+ *   2) 其余**一律用产品默认配置** —— 自检要验的就是用户双击时的真实路径。
+ *      若在受限环境（无 GPU / 容器）起不来，用 `SAFE_MODE=1` 打开产品自带的安全模式
+ *      （实现见 desktop/main.js）再跑一遍。
  *
- *      注：`--no-sandbox` 关掉的是 Chromium 自带沙箱。本工具只加载本地 file:// 页面、
- *      不访问外部内容，因此在这里可以接受；**不要**把它搬到产品运行配置里。
+ * ⚠️ 一条自我更正，记在这免得后人重踩：
+ *   早前（同一轮调试中）记录过「本环境必须加 `--no-sandbox` 才能起来：少了它主进程
+ *   活着、`/json/list` 也列得出 page target、WebSocket 甚至能连上，但 CDP 调用永远
+ *   收不到响应」。**2026-09-17 复测未能复现** —— 把该开关去掉后，16 项照样全绿、
+ *   退出码 0。当时那个结论很可能是**时序或残留进程造成的误判**（调试期我改过等待
+ *   策略，且反复残留过 electron 进程）。
+ *   → 所以这里不再写死该开关，只把它当受限环境的逃生舱；
+ *     并且**改动后两种方式都要跑一遍**，别只验一条路就宣布结论。
  *
  * 用法：
  *   node tools/desktop-selftest.mjs
@@ -155,9 +156,10 @@ try {
   el = spawn(ELECTRON, [
     '.',
     '--remote-debugging-port=' + CDP_PORT,
-    '--no-sandbox',       // ⭐ 最关键：不禁用 Chromium 自带沙箱，渲染进程在本环境起不来
-    '--in-process-gpu',   // GPU 放进主进程：避免独立 GPU 进程崩溃拖死整个应用
-    '--disable-gpu',
+    // 默认走「产品默认配置」—— 这才是用户双击时的真实路径，自检要验的就是它。
+    // 受限环境（无 GPU / 容器 / 自动化沙箱）起不来时，再用产品自带安全模式重试：
+    //   SAFE_MODE=1 node tools/desktop-selftest.mjs
+    ...(String(process.env.SAFE_MODE || '') === '1' ? ['--safe-mode'] : []),
     '--user-data-dir=' + profile
   ], { cwd: DESKTOP, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
 

@@ -9,6 +9,44 @@
 const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 
+// ==================== 安全模式（受限环境启动）====================
+/**
+ * 受限环境（无 GPU / 容器 / 自动化沙箱）下 Chromium 会以几种方式失败，
+ * 每一种都在真实环境实测过，症状一个比一个难诊断：
+ *
+ *   1) GPU 进程反复启动失败 → 主进程 1.5 秒内直接退出：
+ *      `FATAL:gpu_data_manager_impl_private.cc GPU process isn't usable. Goodbye.`
+ *      更坑的是它会留下**孤儿渲染进程** —— CDP 端口照样能连上，很容易误判成"起来了"。
+ *   2) 宿主沙箱（如 Windows job object）与 Chromium 自带沙箱冲突 →
+ *      主进程活着、`/json/list` 能列出 page target、WebSocket 甚至能连上，
+ *      但发出的调试调用**永远收不到任何响应**（渲染进程实际已死）。
+ *      这是最难查的一种：所有表面信号都正常。
+ *
+ * ⚠️ 实测备注（2026-09-17 复测）：本机**默认配置已能正常启动并跑完全部自检**，
+ *    上面第 2 条的症状后来没能复现（疑为调试期的时序/残留进程误判）。
+ *    所以安全模式不是"必须开"，而是**受限环境起不来时的逃生舱** ——
+ *    默认关闭，代价为零。
+ *
+ * ⚠️ 安全模式会关掉 Chromium 自带沙箱，**只在「本机加载本地 file:// 页面」这个前提
+ * 下可接受**。所以它默认不启用，必须显式开启：
+ *
+ *   electron . --safe-mode            # 命令行
+ *   set COURSEFORGE_SAFE_MODE=1       # 或环境变量（Windows）
+ *
+ * 普通桌面环境请不要用，保持默认的沙箱保护。
+ */
+const SAFE_MODE = process.argv.includes('--safe-mode')
+  || /^(1|true|yes)$/i.test(String(process.env.COURSEFORGE_SAFE_MODE || '').trim());
+
+if (SAFE_MODE) {
+  // 这些开关必须写在 app ready **之前**，之后再调就晚了
+  app.disableHardwareAcceleration();           // 官方 API：明确放弃硬件加速
+  app.commandLine.appendSwitch('in-process-gpu'); // GPU 放进主进程，避免独立 GPU 进程崩溃拖死整个应用
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('no-sandbox');
+  console.log('[CourseForge] 安全模式已启用：已禁用 GPU 与 Chromium 沙箱（仅限受限环境）');
+}
+
 let mainWindow = null;
 let eduWindow = null;
 
