@@ -674,6 +674,10 @@
     if (timeEl) timeEl.value = '';
     syncEventsUI();
     renderEventsBar();
+    // 刚录入手边的考试时立刻查一轮：用户最需要的反馈就是「这门考试 X 天后」，
+    // 比干巴巴的「已添加」更有信息量（窗口内会覆盖掉这条确认 toast）
+    runExamTick();
+    if (!document.getElementById('toast').hidden) return; // 弹了考试提醒就别再盖「已添加」
     showToast('已添加' + (ev.kind === 'exam' ? '考试' : '事件') + '：' + ev.name);
   }
 
@@ -866,6 +870,47 @@
     firedAlerts = res.fired;
   }
 
+  // ==================== 考试提醒（7 天内每天每条弹一次） ====================
+  //
+  // 与上课提醒共用 deliverAlert，但**不依赖上课提醒开关**——
+  // 「我不想每节课都被提醒」和「下周的考试别忘了我还是想知道的」是两件事。
+  // 去重账本单独存，不混进课表工作区：它是一次性的「今天提过没有」，
+  // 跟着备份/导出走只会把 A 机器的旧账带去 B 机器。
+  var EXAM_NOTIFIED_KEY = 'wb_courseforge_exam_notified';
+  var EXAM_LEAD_DAYS = 7;
+
+  /** 读去重账本；坏数据一律当空账本，不为它报错 */
+  function loadExamNotified() {
+    try {
+      var m = JSON.parse(window.localStorage.getItem(EXAM_NOTIFIED_KEY));
+      return (m && typeof m === 'object' && !Array.isArray(m)) ? m : {};
+    } catch (e) { return {}; }
+  }
+
+  function saveExamNotified(map) {
+    try { window.localStorage.setItem(EXAM_NOTIFIED_KEY, JSON.stringify(map)); } catch (e) { /* 存不上就存不上，最多明天重复提醒一次 */ }
+  }
+
+  /** 跑一轮考试提醒；判定在 remind.js 的纯函数里，这里只负责通知和记账 */
+  function runExamTick() {
+    if (!RM) return;
+    var events = activeEvents();
+    if (!events.length) return;
+    var notified = loadExamNotified();
+    var due = RM.dueExamAlerts(events, new Date(), notified, EXAM_LEAD_DAYS);
+    if (!due.length) return;
+    var todayKey = due[0].notifiedKey;
+    for (var i = 0; i < due.length; i++) {
+      deliverAlert({ title: due[i].title, body: due[i].body, key: due[i].key });
+      notified[due[i].id] = todayKey;
+    }
+    // 账本每天自净：只留今天的记录，不让它无限长大
+    for (var k in notified) {
+      if (Object.prototype.hasOwnProperty.call(notified, k) && notified[k] !== todayKey) delete notified[k];
+    }
+    saveExamNotified(notified);
+  }
+
   /**
    * 切换今天的调休标记：'' → 'off'/'makeup'，再点一次取消。
    * 为什么会放在「今天」面板而不是设置里：调休是当天才知道的事，
@@ -904,6 +949,7 @@
       // 恰恰是最需要提醒的时候；把提醒和重绘一起跳过等于「最小化就静默失联」。
       // 重绘才需要跳过（省电，也避免打断用户）。
       runReminderTick();
+      runExamTick(); // 考试提醒和上课提醒同一节奏，也不受 document.hidden 影响
       if (document.hidden) return;
       refreshLive();
     }, 30000);
@@ -1133,6 +1179,55 @@
     });
   }
 
+  /**
+   * 分享图「复制到剪贴板」：和保存共用同一套 layout/exportPNG，
+   * 只是最后一步从「触发下载」换成「写剪贴板」。
+   * ClipboardItem 在部分环境（旧 WebView / 非用户手势）不可用，
+   * 失败时明确说原因，别让用户以为复制成功了却粘出来是空气。
+   */
+  function onCopyShare() {
+    if (!SI) { showToast('图片模块未加载，请刷新页面'); return; }
+    if (!state.courses.length) { showToast('还没有课程可分享'); return; }
+
+    var layout;
+    try {
+      layout = buildShareLayout();
+    } catch (e) {
+      showToast('生成图片失败：' + (e && e.message ? e.message : '未知错误'));
+      return;
+    }
+
+    var nav = window.navigator;
+    var btn = document.getElementById('btnCopyShare');
+    var finish = function (ok, msg) {
+      if (btn) btn.disabled = false;
+      showToast(msg);
+    };
+
+    if (!nav.clipboard || typeof nav.clipboard.write !== 'function'
+      || typeof window.ClipboardItem !== 'function') {
+      showToast('当前环境不支持复制图片，请用「保存图片」');
+      return;
+    }
+
+    if (btn) btn.disabled = true;
+    SI.exportPNG(layout, { document: document, fileName: 'clipboard.png' }, function (err, res) {
+      if (err || !res) { finish(false, '复制失败：' + ((err && err.message) || '未知错误')); return; }
+      try {
+        nav.clipboard.write([new window.ClipboardItem({ 'image/png': res.blob })])
+          .then(function () {
+            finish(true, '已复制到剪贴板（' + layout.width + '×' + layout.height + '），直接粘贴即可');
+          })
+          .catch(function (e) {
+            // 常见于权限被拒或非用户手势触发；兜底方案是保存
+            finish(false, '复制失败：' + ((e && e.message) || '剪贴板权限被拒绝') + '，可用「保存图片」代替');
+          });
+      } catch (e) {
+        finish(false, '复制失败：' + ((e && e.message) || '未知错误'));
+      }
+    });
+  }
+
   // ==================== PWA（可添加到桌面 / 离线可用） ====================
 
   function registerSW() {
@@ -1214,6 +1309,7 @@
     'share-scope': onShareScope,
     'share-theme': onShareTheme,
     'save-share': onSaveShare,
+    'copy-share': onCopyShare,
     'toggle-theme': toggleTheme,
     'import-json': function () { document.getElementById('importFile').click(); },
     'clear-sample': onClearSample,
@@ -1431,6 +1527,7 @@
     // 那正是最该立刻提醒的时刻，等到 30 秒后的第一次 tick 也不算错，但没必要等
     syncRemindUI();
     runReminderTick();
+    runExamTick(); // 首屏同样直查一次考试提醒，理由同上
   }
 
   function bindEvents() {

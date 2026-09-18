@@ -343,6 +343,78 @@
     return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
   }
 
+  // ==================== 考试提醒（P3 补强） ====================
+  //
+  // 上课提醒管「今天的课」，考试提醒管「最近几天里的大事」——
+  // 两条时间线，共用同一套判定哲学：纯函数输入输出，通知只是一层皮。
+  // 每天每条最多提醒一次；去重记录由**调用方**持久化（网页端 localStorage、
+  // 桌面端偏好文件），本模块不知道存储是什么。
+
+  /** 'YYYY-MM-DD' → 本地零点；解析失败返回 null（和 core.parseDate 同规则，但本模块不依赖它） */
+  function parseDayKey(s) {
+    var m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(s || ''));
+    if (!m) return null;
+    var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  /** 自然日差：同一天 0、明天 1；日期不合法返回 null */
+  function dayDiff(fromKey, toKey) {
+    var a = parseDayKey(fromKey);
+    var b = parseDayKey(toKey);
+    if (!a || !b) return null;
+    return Math.round((b.getTime() - a.getTime()) / 86400000);
+  }
+
+  /**
+   * 今天该弹的考试/事件提醒。
+   * @param {Array} events  当前学期的事件（原始结构即可，字段不合法的自动跳过）
+   * @param {Date}  now     此刻
+   * @param {object} notifiedMap  已通知记录 { [eventId]: 'YYYY-MM-DD' }，调用方持久化
+   * @param {number} [leadDays]   提前几天开始提醒，默认 7
+   * @returns {Array} 每项 {id, name, kind, daysLeft, title, body, key, notifiedKey}
+   *          key 用于通知 tag 去重（同一天同一条只弹一个气泡），
+   *          notifiedKey 是今天的日期键 —— 调用方把它写进 notifiedMap 就完成「今天已提醒」。
+   */
+  function dueExamAlerts(events, now, notifiedMap, leadDays) {
+    var lead = (typeof leadDays === 'number' && isFinite(leadDays) && leadDays >= 0) ? Math.floor(leadDays) : 7;
+    var map = (notifiedMap && typeof notifiedMap === 'object' && !Array.isArray(notifiedMap)) ? notifiedMap : {};
+    var today = now instanceof Date ? now : new Date();
+    var todayKey = (today.getFullYear()) + '-' +
+      (today.getMonth() + 1 < 10 ? '0' : '') + (today.getMonth() + 1) + '-' +
+      (today.getDate() < 10 ? '0' : '') + today.getDate();
+
+    var list = Array.isArray(events) ? events : [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var ev = list[i];
+      if (!ev || typeof ev !== 'object') continue;
+      var name = String(ev.name == null ? '' : ev.name).trim();
+      if (!name) continue;
+      var left = dayDiff(todayKey, ev.date);
+      if (left == null || left < 0 || left > lead) continue;
+      if (map[ev.id] === todayKey) continue;   // 今天已经提醒过这条
+
+      var isExam = ev.kind === 'exam';
+      var whenText = left === 0 ? '今天' : (left === 1 ? '明天' : left + ' 天后');
+      out.push({
+        id: String(ev.id || ''),
+        name: name,
+        kind: isExam ? 'exam' : 'custom',
+        daysLeft: left,
+        title: isExam
+          ? (left === 0 ? '今天有考试' : '考试临近')
+          : (left === 0 ? '今天有日程' : '日程临近'),
+        body: name + ' · ' + whenText + (ev.time ? ' ' + String(ev.time) : ''),
+        key: 'exam:' + ev.id + ':' + todayKey,
+        notifiedKey: todayKey
+      });
+    }
+    // 最近的在前：弹通知的顺序和用户处理事情的顺序一致
+    out.sort(function (a, b) { return a.daysLeft - b.daysLeft; });
+    return out;
+  }
+
   return {
     LEAD_CHOICES: LEAD_CHOICES,
     GRACE_MIN: GRACE_MIN,
@@ -366,6 +438,8 @@
 
     nextUpcoming: nextUpcoming,
     upcomingSummary: upcomingSummary,
+    dueExamAlerts: dueExamAlerts,
+    dayDiff: dayDiff,
     hhmm: hhmm
   };
 });

@@ -44,6 +44,7 @@ const FILES = {
   widgetUi: path.join(ROOT, 'web/js/widget.js'),
   app: path.join(ROOT, 'web/js/app.js'),
   core: path.join(ROOT, 'web/js/core.js'),
+  remind: path.join(ROOT, 'web/js/remind.js'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
 const FIXTURE = 'tests/fixtures/cjk-timetable-rotated.pdf';
@@ -1082,6 +1083,54 @@ function onlyMatch(i) {
     file: 'widgetUi',
     apply: (s) => (s.includes(anchor)
       ? s.replace(anchor, "    return (ev.kind === 'exam' ? '📝 ' : '📌 ') + ev.name + ' · ' + ev.daysLeft; // MUTANT")
+      : s)
+  });
+}
+
+// 74) 考试提醒去重失效：账本被无视，同一条考试一天弹到天黑
+{
+  const anchor = '      if (map[ev.id] === todayKey) continue;';
+  mutations.push({
+    name: 'dueExamAlerts：去重账本失效（同一条考试一天弹到天黑）',
+    file: 'remind',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '      // MUTANT（不再看账本）')
+      : s)
+  });
+}
+
+// 75) 考试提醒 7 天上限失效：下个月的考试也开始每天弹
+{
+  const anchor = '      if (left == null || left < 0 || left > lead) continue;';
+  mutations.push({
+    name: 'dueExamAlerts：lead 上限失效（远期考试也被卷进提醒窗口）',
+    file: 'remind',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '      if (left == null || left < 0) continue; // MUTANT（不再看上限）')
+      : s)
+  });
+}
+
+// 76) 添加考试后不再即时检查：录入一门 3 天后的考试却毫无反馈
+{
+  const anchor = "    runExamTick();\n    if (!document.getElementById('toast').hidden) return; // 弹了考试提醒就别再盖「已添加」";
+  mutations.push({
+    name: 'onAddEvent：添加后不再即时检查（录入手边的考试却毫无反馈）',
+    file: 'app',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    // MUTANT: 添加后不再即时检查')
+      : s)
+  });
+}
+
+// 77) 复制按钮的剪贴板守卫失效：不支持的直接 TypeError（被 catch 吞成「复制失败」）
+{
+  const anchor = "    if (!nav.clipboard || typeof nav.clipboard.write !== 'function'\n      || typeof window.ClipboardItem !== 'function') {";
+  mutations.push({
+    name: 'onCopyShare：剪贴板守卫失效（不支持的报「复制失败」而不是引导去保存）',
+    file: 'app',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    if (false) { // MUTANT（守卫被拆）')
       : s)
   });
 }

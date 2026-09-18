@@ -340,3 +340,66 @@ test('core.normalizeSettings：清洗并保留 days / remind，脏数据被丢�
   const arr = CF.normalizeSettings({ semesterStart: TERM_START, days: ['off'] });
   assert.deepEqual(arr.days, {});
 });
+
+// ==================== 考试提醒（P3 补强） ====================
+
+/** 造一个事件，默认 2026-09-16（now=14 号时是 2 天后）的考试 */
+function ev(patch) {
+  return Object.assign({
+    id: 'e1', name: '高数期末', date: '2026-09-16', time: '09:00', kind: 'exam'
+  }, patch || {});
+}
+
+test('dueExamAlerts：7 天内的考试返回提醒，最近的最先，文案带「明天/几天后」与时间', () => {
+  const now = at(14, 8, 0);
+  const due = RM.dueExamAlerts(
+    [ev({ id: 'far', date: '2026-09-20' }), ev({ id: 'near', date: '2026-09-15' })],
+    now, {}, 7
+  );
+  assert.equal(due.length, 2);
+  assert.equal(due[0].id, 'near', '最近的考试排最前');
+  assert.equal(due[0].daysLeft, 1);
+  assert.match(due[0].body, /明天/);
+  assert.match(due[0].body, /09:00/);
+  assert.match(due[0].body, /高数期末/);
+  assert.equal(due[0].notifiedKey, '2026-09-14', '账本键值 = 今天的日期键');
+  assert.equal(due[0].key, 'exam:near:2026-09-14', '通知 tag = 事件 + 日期，同一天同一条只弹一个气泡');
+});
+
+test('dueExamAlerts：lead 边界 —— 第 7 天提醒、第 8 天不提醒、已过去的不提醒', () => {
+  const now = at(14, 8, 0);
+  assert.equal(RM.dueExamAlerts([ev({ date: '2026-09-21' })], now, {}, 7).length, 1, '刚好第 7 天要提醒');
+  assert.equal(RM.dueExamAlerts([ev({ date: '2026-09-22' })], now, {}, 7).length, 0, '第 8 天超出窗口');
+  assert.equal(RM.dueExamAlerts([ev({ date: '2026-09-13' })], now, {}, 7).length, 0, '已经考完的不提');
+});
+
+test('dueExamAlerts：今天已提醒的跳过，昨天的账不挡今天的提醒', () => {
+  const now = at(14, 8, 0);
+  const first = RM.dueExamAlerts([ev({ id: 'a' })], now, {}, 7);
+  assert.equal(first.length, 1);
+  const todayKey = first[0].notifiedKey;
+
+  // 账本记了今天 → 同一天再跑不提醒
+  assert.equal(RM.dueExamAlerts([ev({ id: 'a' })], now, { a: todayKey }, 7).length, 0);
+  // 但到了 15 号，同样的账本挡不住 —— 「每天一次」是每天各一次，不是一生一次
+  assert.equal(RM.dueExamAlerts([ev({ id: 'a' })], at(15, 8, 0), { a: todayKey }, 7).length, 1);
+});
+
+test('dueExamAlerts：bad input 一律按「没有可提醒的」处理，不抛错', () => {
+  const now = at(14, 8, 0);
+  assert.equal(RM.dueExamAlerts(null, now, {}, 7).length, 0);
+  assert.equal(RM.dueExamAlerts([null, 'x', { name: '' }, { name: '无日期', date: 'bad' }], now, {}, 7).length, 0);
+  // 账本不是对象时当空账本
+  assert.equal(RM.dueExamAlerts([ev({ id: 'a' })], now, 'oops', 7).length, 1);
+  // lead 非法回落默认 7（-3 → 7 天窗口照常；NaN → 也是 7）
+  assert.equal(RM.dueExamAlerts([ev({ date: '2026-09-21' })], now, null, -3).length, 1);
+  assert.equal(RM.dueExamAlerts([ev({ date: '2026-09-22' })], now, null, NaN).length, 0);
+});
+
+test('dueExamAlerts：今天考试的 title 是「今天有考试」；普通日程用「日程」话术', () => {
+  const now = at(16, 8, 0);
+  assert.equal(RM.dueExamAlerts([ev({ date: '2026-09-16' })], now, {}, 7)[0].title, '今天有考试');
+  const custom = RM.dueExamAlerts([ev({ date: '2026-09-16', kind: 'custom' })], now, {}, 7)[0];
+  assert.equal(custom.title, '今天有日程');
+  assert.equal(custom.kind, 'custom');
+});

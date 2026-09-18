@@ -1220,3 +1220,74 @@ D('事件：删除 → chip 消失、倒计时条回到隐藏（不能残留上�
     assert.equal(doc.getElementById('wEvent') ? 1 : 1, 1);   // wEvent 属于挂件页，此处只需不炸
   });
 });
+
+// ==================== 考试提醒 / 分享图复制（P3 补强） ====================
+
+/** 相对真实「今天」偏移 n 天后的 'YYYY-MM-DD'（考试提醒判定用的是真实时钟） */
+function dateAfterDays(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  const p = (x) => (x < 10 ? '0' + x : String(x));
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+
+D('考试提醒：添加 3 天后的考试 → 页内提示弹出，账本记下「今天已提醒」', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    doc.getElementById('eventName').value = '线代期末';
+    doc.getElementById('eventDate').value = dateAfterDays(3);
+    doc.getElementById('eventKind').value = 'exam';
+    doc.querySelector('[data-action="add-event"]').click();
+    await flush();
+
+    // jsdom 没有 Notification → deliverAlert 降级成页内提示，正好让我们能断言
+    const tip = doc.getElementById('toast');
+    assert.equal(tip.hidden, false, '考试提醒应当以页内提示形式出现（jsdom 无系统通知）');
+    assert.match(tip.textContent, /考试临近/);
+    assert.match(tip.textContent, /线代期末/);
+    assert.match(tip.textContent, /3 天后/);
+
+    // 账本落盘且只记今天：今天内重复 tick 不再弹
+    const ledger = JSON.parse(w.localStorage.getItem('wb_courseforge_exam_notified') || 'null');
+    assert.ok(ledger && typeof ledger === 'object' && !Array.isArray(ledger), '账本应当是对象');
+    const ids = Object.keys(ledger);
+    assert.equal(ids.length, 1, '账本里只应有这一条考试，实际 ' + JSON.stringify(ledger));
+    assert.equal(ledger[ids[0]], dateAfterDays(0), '账本记的必须是今天的日期键');
+  });
+});
+
+D('考试提醒：8 天外的考试今天不提醒（账本保持为空）', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    doc.getElementById('eventName').value = '远期考试';
+    doc.getElementById('eventDate').value = dateAfterDays(8);
+    doc.getElementById('eventKind').value = 'exam';
+    doc.querySelector('[data-action="add-event"]').click();
+    await flush();
+
+    assert.equal(w.localStorage.getItem('wb_courseforge_exam_notified'), null,
+      '窗口外的考试不该留任何账');
+  });
+});
+
+D('分享图复制：jsdom 不支持剪贴板 → 明确提示改用保存，按钮不报错', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    // index.html 里必须有这个按钮（缺了就是文案单一真相源断链）
+    const btn = doc.querySelector('[data-action="copy-share"]');
+    assert.ok(btn, '分享弹窗外应当挂「复制图片」按钮');
+    assert.equal(btn.id, 'btnCopyShare');
+
+    btn.click();
+    await flush();
+    const tip = doc.getElementById('toast');
+    assert.equal(tip.hidden, false, '不支持时应给出明确提示而不是无声失败');
+    assert.match(tip.textContent, /不支持复制图片/);
+    assert.match(tip.textContent, /保存图片/);
+    // 提示后按钮要恢复可用，不能永久禁用
+    assert.equal(btn.disabled, false, '提示降级后按钮必须恢复可点');
+  });
+});
