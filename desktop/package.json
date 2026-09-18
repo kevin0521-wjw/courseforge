@@ -1,6 +1,6 @@
 {
   "name": "courseforge-desktop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "课表工坊 CourseForge 桌面端（Electron）",
   "main": "main.js",
   "scripts": {
