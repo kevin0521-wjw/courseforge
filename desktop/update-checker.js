@@ -20,6 +20,8 @@
 
 const TIMEOUT_MS = 30000;
 const MAX_BODY = 1024 * 1024;
+/** 最多跟随 3 次重定向：与 WebDAV 客户端同一约定 */
+const MAX_REDIRECTS = 3;
 
 /** 固定的发布页：html_url 校验不过时的兜底，永远指向本仓库 releases */
 const RELEASES_PAGE = 'https://github.com/kevin0521-wjw/courseforge/releases/latest';
@@ -56,7 +58,7 @@ function createUpdateChecker(deps) {
   const http = deps && deps.http;
   const https = deps && deps.https;
 
-  function fetchText(urlStr) {
+  function fetchOnce(urlStr) {
     return new Promise((resolve, reject) => {
       let u;
       try {
@@ -92,13 +94,34 @@ function createUpdateChecker(deps) {
           }
           chunks.push(c);
         });
-        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+        res.on('end', () => resolve({
+          status: res.statusCode,
+          location: res.headers.location || '',
+          body: Buffer.concat(chunks).toString('utf8')
+        }));
         res.on('error', (e) => reject(e));
       });
       req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error('请求超时（30 秒无响应）')));
       req.on('error', (e) => reject(e));
       req.end();
     });
+  }
+
+  /** GET（含 3xx 跟随，最多 3 次）：端到端实测 api.github.com 的 releases/latest 在部分网络下会 302 */
+  async function fetchText(urlStr) {
+    let current = String(urlStr);
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const res = await fetchOnce(current);
+      if (res.status >= 300 && res.status < 400 && res.location) {
+        if (hop === MAX_REDIRECTS) {
+          throw new Error('重定向次数过多（HTTP ' + res.status + '），检查网络环境');
+        }
+        current = new URL(res.location, current).href;
+        continue;
+      }
+      return { status: res.status, body: res.body };
+    }
+    throw new Error('重定向次数过多');
   }
 
   /**
@@ -149,6 +172,7 @@ function createUpdateChecker(deps) {
   return {
     TIMEOUT_MS: TIMEOUT_MS,
     MAX_BODY: MAX_BODY,
+    MAX_REDIRECTS: MAX_REDIRECTS,
     RELEASES_PAGE: RELEASES_PAGE,
     compareVersions: compareVersions,
     normalizeTag: normalizeTag,

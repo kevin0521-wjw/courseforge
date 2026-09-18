@@ -127,6 +127,22 @@ test('check：html_url 不是 github.com 一律回落到固定发布页（防响
   });
 });
 
+test('check：302 重定向跟随到真实地址（端到端实测 api.github.com 会 302）', async () => {
+  await withServer((req, res) => {
+    if (req.url === '/releases/latest') {
+      res.writeHead(302, { Location: '/real-latest' });
+      res.end();
+    } else {
+      res.writeHead(200); res.end(release('v0.2.0'));
+    }
+  }, async (base) => {
+    const r = await checker.check(base + '/releases/latest', '0.1.0');
+    assert.equal(r.ok, true, '302 应被跟随而不是当失败：' + r.message);
+    assert.equal(r.status, 'available');
+    assert.equal(r.latest, 'v0.2.0');
+  });
+});
+
 test('check：连接拒绝 → 统一形状的 network 失败，不抛异常', async () => {
   // 端口 1 几乎必然无监听；即便个别环境有，也是一次确定性的失败路径
   const r = await checker.check('http://127.0.0.1:1/x', '0.1.0');
