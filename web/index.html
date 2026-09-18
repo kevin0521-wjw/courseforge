@@ -181,6 +181,25 @@
           </label>
           <p class="hint">关掉主窗口后它依然在，点系统托盘图标可以随时显示或隐藏。这个开关即时生效，不跟随「保存设置」。</p>
         </div>
+
+        <!-- 云同步（可选）：不填服务器配置这个功能就不存在，数据默认仍全本地 -->
+        <div class="field" id="cloudField">
+          <span class="field-label">云同步（WebDAV，可选）</span>
+          <input type="url" id="cloudUrl" name="cloudUrl" placeholder="服务器地址，如：https://dav.jianguoyun.com/dav/" autocomplete="off" aria-label="WebDAV 服务器地址">
+          <input type="text" id="cloudUser" name="cloudUser" placeholder="用户名" autocomplete="off" aria-label="WebDAV 用户名">
+          <input type="password" id="cloudPass" name="cloudPass" placeholder="应用密码（不是登录密码）" autocomplete="new-password" aria-label="WebDAV 应用密码">
+          <label class="field-check">
+            <input type="checkbox" id="cloudRemember" name="cloudRemember">
+            <span>记住密码（桌面端加密存储；网页端明文存在本机浏览器里）</span>
+          </label>
+          <div class="event-form">
+            <button type="button" class="btn btn-ghost" data-action="cloud-save">保存配置</button>
+            <button type="button" class="btn btn-ghost" data-action="cloud-upload" id="btnCloudUpload">上传备份</button>
+            <button type="button" class="btn btn-ghost" data-action="cloud-download" id="btnCloudDownload">从云端恢复</button>
+          </div>
+          <p class="hint" id="cloudState">—</p>
+          <p class="hint">手动两键：上传=用本机覆盖云端，恢复=用云端覆盖本机（恢复前会确认）。数据先过本机，再到你自己的服务器，不经过任何第三方。</p>
+        </div>
       </div>
 
       <div class="drawer-foot">
@@ -454,6 +473,7 @@
   <script src="js/edu-html.js"></script>
   <script src="js/ics.js"></script>
   <script src="js/share-image.js"></script>
+  <script src="js/webdav.js"></script>
   <script src="js/importer.js"></script>
   <script src="js/app.js"></script>
 </body>

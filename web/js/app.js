@@ -14,6 +14,7 @@
   var ICS = window.CourseForgeICS;
   var SI = window.CourseForgeShare;
   var RM = window.CourseForgeRemind;
+  var WD = window.CourseForgeWebDav;
 
   // 桌面端「常驻小组件」开关的重新同步函数；网页版恒为 null。
   // 开关状态的真身在主进程（托盘菜单也能改），所以每次打开设置抽屉都要重读一次，
@@ -290,11 +291,7 @@
 
   function exportJSON() {
     persist(); // 先把工作副本同步进学期，避免导出到旧的课程列表
-    var payload = JSON.stringify({
-      version: 2,
-      activeId: state.activeId,
-      semesters: state.semesters
-    }, null, 2);
+    var payload = backupPayload();
     var blob = new Blob([payload], { type: 'application/json' });
     var a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -304,6 +301,15 @@
     a.remove();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
     showToast('备份已导出（' + state.semesters.length + ' 个学期）');
+  }
+
+  /** 备份 JSON 的单一真相源：本地导出与云上传共用同一份格式 */
+  function backupPayload() {
+    return JSON.stringify({
+      version: 2,
+      activeId: state.activeId,
+      semesters: state.semesters
+    }, null, 2);
   }
 
   function onImportFile(e) {
@@ -368,6 +374,223 @@
     persist();
     refreshAll();
     showToast('当前学期课程已清空');
+  }
+
+  // ==================== WebDAV 云同步（可选，默认全本地） ====================
+  //
+  // 设计底线：不填服务器配置，这个功能就不存在。数据默认仍只在本地 ——
+  // 「数据在用户手里」是本项目的立身之本，云同步只是给愿意自备服务器的人多一条路。
+  // v1 只做手动两键（上传/恢复），不做自动同步：课表低频变更，冲突处理的复杂度
+  // 远超收益，而「覆盖云端 / 覆盖本机」这两个动作语义清楚、各自有确认。
+  var CLOUD_CFG_KEY = 'wb_courseforge_webdav_cfg';
+
+  /** 读云同步配置；坏数据当没配置，绝不为它报错 */
+  function loadCloudCfg() {
+    try {
+      var m = JSON.parse(window.localStorage.getItem(CLOUD_CFG_KEY));
+      if (!m || typeof m !== 'object' || Array.isArray(m)) return {};
+      return {
+        url: typeof m.url === 'string' ? m.url : '',
+        username: typeof m.username === 'string' ? m.username : '',
+        remember: m.remember === true,
+        // 网页端「记住密码」是明文本机存储 —— 这是用户勾选时已被告知的取舍
+        password: typeof m.password === 'string' ? m.password : ''
+      };
+    } catch (e) { return {}; }
+  }
+
+  function saveCloudCfg(cfg) {
+    try { window.localStorage.setItem(CLOUD_CFG_KEY, JSON.stringify(cfg)); } catch (e) { /* 存不上就不记 */ }
+  }
+
+  /** 桌面端云同步桥；网页版返回 null */
+  function cloudBridge() {
+    return (window.CourseForgeDesktop && window.CourseForgeDesktop.cloud)
+      ? window.CourseForgeDesktop.cloud : null;
+  }
+
+  /** 'desktop' 主进程代发（无跨域限制）| 'web' 浏览器 fetch | 'none' */
+  function cloudMode() {
+    if (cloudBridge()) return 'desktop';
+    return (typeof window.fetch === 'function') ? 'web' : 'none';
+  }
+
+  /** UTF-8 安全的 base64（btoa 直接吃非 Latin1 会炸，先过 encodeURIComponent） */
+  function b64utf8(s) {
+    return window.btoa(unescape(encodeURIComponent(s)));
+  }
+
+  /** 输入框 → 清洗后的配置；不合法返回 null */
+  function readCloudInputs() {
+    if (!WD) return null;
+    return WD.normalizeConfig({
+      url: inputValue('cloudUrl'),
+      username: inputValue('cloudUser'),
+      password: inputValue('cloudPass')
+    });
+  }
+
+  function inputValue(id) {
+    var el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+  }
+
+  function setCloudState(msg) {
+    var el = document.getElementById('cloudState');
+    if (el) el.textContent = msg;
+  }
+
+  /** 打开设置抽屉时回填：密码永不回填进 DOM（桌面端在主进程，网页端只在勾选时本地留） */
+  function syncCloudUI() {
+    var cfg = loadCloudCfg();
+    var urlEl = document.getElementById('cloudUrl');
+    var userEl = document.getElementById('cloudUser');
+    var remEl = document.getElementById('cloudRemember');
+    if (urlEl) urlEl.value = cfg.url || '';
+    if (userEl) userEl.value = cfg.username || '';
+    if (remEl) remEl.checked = !!cfg.remember;
+    var bridge = cloudBridge();
+    if (bridge && bridge.credStatus) {
+      bridge.credStatus().then(function (st) {
+        st = st || {};
+        setCloudState('桌面端：已支持' + (st.saved ? ' · 已记住「' + st.username + '」的密码' : '')
+          + (st.saved ? '' : ' · 勾选「记住密码」保存后免输'));
+      }).catch(function () { setCloudState('桌面端：已支持'); });
+    } else if (cloudMode() === 'web') {
+      setCloudState('网页端：能否使用取决于服务器的跨域（CORS）设置；被拦截时请改用桌面版');
+    } else {
+      setCloudState('当前环境不支持云同步');
+    }
+  }
+
+  function onCloudSave() {
+    var cfg = readCloudInputs();
+    if (!cfg) { showToast('请完整填写服务器地址（http/https）、用户名和应用密码'); return; }
+    var remember = !!(document.getElementById('cloudRemember') && document.getElementById('cloudRemember').checked);
+    var bridge = cloudBridge();
+    var toStore = { url: cfg.url, username: cfg.username, remember: remember };
+
+    if (bridge) {
+      // 桌面端：密码进主进程的加密存储（safeStorage/DPAPI），localStorage 只留服务器与用户名
+      if (remember && cfg.password) {
+        bridge.saveCred({ username: cfg.username, password: cfg.password }).then(function (r) {
+          if (r && r.ok) { showToast('已保存配置，密码已加密存到本机'); }
+          else { showToast('配置已保存，但密码存不了（' + ((r && r.reason === 'noenc') ? '本机不支持加密' : '未知原因') + '），本次使用仍可手输'); }
+        }).catch(function () { showToast('配置已保存，密码保存失败'); });
+      } else if (bridge.credClear) {
+        // 关掉「记住」就顺手清掉旧密码：不留一份用户以为已经删掉的密文
+        bridge.credClear();
+      }
+    } else {
+      // 网页端：只有明确勾选才把密码明文留在本机浏览器
+      if (remember) toStore.password = cfg.password;
+    }
+    saveCloudCfg(toStore);
+    syncCloudUI();
+    if (!bridge) showToast(remember ? '配置已保存（密码明文存在本机，注意设备安全）' : '配置已保存（密码不记住，每次操作时输入）');
+  }
+
+  /**
+   * 上传备份：persist 后走 backupPayload，与「导出备份」同一份格式。
+   * 桌面端没填密码时让主进程用加密存储里那份（useStored），输错用户名会拿不到。
+   */
+  function onCloudUpload() {
+    if (!WD) { showToast('云同步模块未加载，请刷新页面'); return; }
+    var cfg = readCloudInputs();
+    if (!cfg) { showToast('请先完整填写服务器地址、用户名和应用密码'); return; }
+    persist();
+    var payload = backupPayload();
+    var btn = document.getElementById('btnCloudUpload');
+    if (btn) btn.disabled = true;
+
+    var done = function (ok, msg) { if (btn) btn.disabled = false; showToast(msg); };
+
+    if (cloudMode() === 'desktop') {
+      cloudBridge().upload({ url: cfg.url, username: cfg.username, password: cfg.password, body: payload })
+        .then(function (r) {
+          done(!!(r && r.ok), r && r.ok
+            ? '已上传备份到云端（' + state.semesters.length + ' 个学期 / ' + state.courses.length + ' 门课）'
+            : '上传失败：' + ((r && r.message) || ('HTTP ' + (r && r.status))));
+        })
+        .catch(function (e) { done(false, '上传失败：' + ((e && e.message) || '未知错误')); });
+      return;
+    }
+    if (cloudMode() === 'web') {
+      window.fetch(WD.remoteUrl(cfg), {
+        method: 'PUT',
+        headers: {
+          Authorization: WD.authHeader(cfg.username, cfg.password, b64utf8),
+          'Content-Type': 'application/json'
+        },
+        body: payload
+      }).then(function (res) {
+        done(res.ok, res.ok
+          ? '已上传备份到云端（' + state.semesters.length + ' 个学期 / ' + state.courses.length + ' 门课）'
+          : '上传失败：HTTP ' + res.status + (res.status === 401 ? '（认证失败，检查用户名/应用密码）' : ''));
+      }).catch(function () {
+        // fetch 的 TypeError 在这里几乎都是 CORS：服务器不认识这个来源
+        done(false, '网页端被浏览器跨域拦截（服务器未开放 CORS），请在桌面版使用云同步');
+      });
+      return;
+    }
+    done(false, '当前环境不支持云同步');
+  }
+
+  /** 从云端恢复：取回 → 安检 → 一次确认（含摘要）→ 走与文件导入完全相同的落库路径 */
+  function onCloudDownload() {
+    if (!WD) { showToast('云同步模块未加载，请刷新页面'); return; }
+    var cfg = readCloudInputs();
+    if (!cfg) { showToast('请先完整填写服务器地址、用户名和应用密码'); return; }
+    var btn = document.getElementById('btnCloudDownload');
+    if (btn) btn.disabled = true;
+
+    var finish = function (ok, msg) { if (btn) btn.disabled = false; showToast(msg); };
+
+    var handleText = function (text, lastModified) {
+      var data = WD.validateBackupText(text);
+      if (!data) { finish(false, '云端内容不是有效的 CourseForge 备份'); return; }
+      var ws = CF.normalizeWorkspace(data);
+      if (!ws) { finish(false, '云端备份结构不认识（可能来自其它版本）'); return; }
+      var inCourses = 0;
+      for (var i = 0; i < ws.semesters.length; i++) inCourses += ws.semesters[i].courses.length;
+      var msg = '从云端恢复会覆盖当前本机全部数据，确定吗？\n\n'
+        + '云端：' + WD.workspaceSummary(data) + (lastModified ? '\n备份时间：' + lastModified : '')
+        + '\n当前：' + state.semesters.length + ' 个学期 / ' + state.courses.length + ' 门课';
+      if (!window.confirm(msg)) { finish(false, '已取消恢复'); return; }
+
+      state.semesters = ws.semesters;
+      loadSemester(ws.activeId, false);
+      persist();
+      syncSettingsUI();
+      refreshAll();
+      finish(true, '已从云端恢复 ' + ws.semesters.length + ' 个学期 / ' + inCourses + ' 门课');
+    };
+
+    if (cloudMode() === 'desktop') {
+      cloudBridge().download({ url: cfg.url, username: cfg.username, password: cfg.password })
+        .then(function (r) {
+          if (r && r.ok) handleText(String(r.body || ''), r.lastModified || '');
+          else finish(false, '恢复失败：' + ((r && r.message) || ('HTTP ' + (r && r.status))));
+        })
+        .catch(function (e) { finish(false, '恢复失败：' + ((e && e.message) || '未知错误')); });
+      return;
+    }
+    if (cloudMode() === 'web') {
+      window.fetch(WD.remoteUrl(cfg), {
+        method: 'GET',
+        headers: { Authorization: WD.authHeader(cfg.username, cfg.password, b64utf8) }
+      }).then(function (res) {
+        if (!res.ok) {
+          finish(false, '恢复失败：HTTP ' + res.status + (res.status === 404 ? '（云端还没有备份，先上传一次）' : (res.status === 401 ? '（认证失败）' : '')));
+          return;
+        }
+        return res.text().then(function (t) { handleText(t, res.headers.get('last-modified') || ''); });
+      }).catch(function () {
+        finish(false, '网页端被浏览器跨域拦截（服务器未开放 CORS），请在桌面版使用云同步');
+      });
+      return;
+    }
+    finish(false, '当前环境不支持云同步');
   }
 
   // ==================== 多学期 ====================
@@ -552,6 +775,7 @@
     }
     syncRemindUI();
     syncEventsUI();
+    syncCloudUI();
   }
 
   /** 把提醒相关的设置与权限状态刷到设置抽屉里 */
@@ -1310,6 +1534,9 @@
     'share-theme': onShareTheme,
     'save-share': onSaveShare,
     'copy-share': onCopyShare,
+    'cloud-save': onCloudSave,
+    'cloud-upload': onCloudUpload,
+    'cloud-download': onCloudDownload,
     'toggle-theme': toggleTheme,
     'import-json': function () { document.getElementById('importFile').click(); },
     'clear-sample': onClearSample,

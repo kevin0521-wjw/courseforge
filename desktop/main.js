@@ -10,6 +10,7 @@ const { app, BrowserWindow, Menu, shell, ipcMain, safeStorage } = require('elect
 const path = require('path');
 const EduLogin = require('./edu-login.js');
 const { createCredStore } = require('./cred-store.js');
+const { createWebdavClient } = require('./webdav-client.js');
 const { createWidgetStore } = require('./widget-store.js');
 const { createShell } = require('./desktop-shell.js');
 
@@ -603,6 +604,79 @@ function registerAutoLoginIpc() {
   });
 }
 
+// ==================== WebDAV 云同步（可选，v1.0） ====================
+//
+// 与教务凭据同一套铁律：密码只在内存与加密存储之间走，磁盘上只有 safeStorage 密文，
+// 主进程只回「存没存过 + 用户名」，不回密码。凭据文件独立（webdav-credentials.json），
+// 「清除教务账号」绝不能顺带清掉 WebDAV 的，反之亦然 —— 两个功能不要互相连坐。
+
+const webdav = createWebdavClient({ http: require('http'), https: require('https') });
+let cloudCredStore = null;
+
+function getCloudCredStore() {
+  if (!cloudCredStore) {
+    cloudCredStore = createCredStore({
+      file: path.join(app.getPath('userData'), 'webdav-credentials.json'),
+      safeStorage: safeStorage,
+      log: (m) => console.log('[CourseForge] ' + m)
+    });
+  }
+  return cloudCredStore;
+}
+
+/** 入参收敛：IPC 传来的东西不可信，先切干净再往深处走 */
+function cleanCloudArgs(p) {
+  p = (p && typeof p === 'object') ? p : {};
+  return {
+    url: String(p.url == null ? '' : p.url),
+    username: String(p.username == null ? '' : p.username),
+    password: String(p.password == null ? '' : p.password),
+    body: (typeof p.body === 'string') ? p.body : null,
+    useStored: !!p.useStored
+  };
+}
+
+function registerCloudIpc() {
+  // 上传/下载共用一段密码解析：输入框给了就用输入框的；没给且「已存过」才用存的。
+  // 存过的用户名必须与本次请求的用户名一致 —— 换了账号还拿旧密码去撞是事故不是便捷。
+  async function resolvePassword(args) {
+    if (args.password) return args.password;
+    if (args.useStored) {
+      const saved = getCloudCredStore().read();
+      if (saved && saved.password && saved.username === args.username) return saved.password;
+    }
+    return '';
+  }
+
+  ipcMain.handle('cloud:upload', async (event, p) => {
+    const args = cleanCloudArgs(p);
+    if (!args.url || !args.username) return { ok: false, status: 0, message: '缺少服务器地址或用户名' };
+    if (args.body == null) return { ok: false, status: 0, message: '备份内容为空' };
+    const pass = await resolvePassword(args);
+    if (!pass) return { ok: false, status: 0, message: '没有可用的密码（先填写并保存，或勾选记住密码）' };
+    return webdav.upload(args.url, args.username, pass, args.body);
+  });
+
+  ipcMain.handle('cloud:download', async (event, p) => {
+    const args = cleanCloudArgs(p);
+    if (!args.url || !args.username) return { ok: false, status: 0, message: '缺少服务器地址或用户名' };
+    const pass = await resolvePassword(args);
+    if (!pass) return { ok: false, status: 0, message: '没有可用的密码（先填写并保存，或勾选记住密码）' };
+    return webdav.download(args.url, args.username, pass);
+  });
+
+  ipcMain.handle('cloud:cred-save', (event, p) => {
+    const args = cleanCloudArgs(p);
+    return getCloudCredStore().save({ username: args.username, password: args.password });
+  });
+
+  ipcMain.handle('cloud:cred-status', () => getCloudCredStore().status());
+  ipcMain.handle('cloud:cred-clear', () => {
+    const ok = getCloudCredStore().clear();
+    return { ok: ok, status: getCloudCredStore().status() };
+  });
+}
+
 // 精简菜单：保留复制/粘贴/刷新等基础能力
 function buildMenu() {
   const template = [
@@ -646,6 +720,7 @@ function buildMenu() {
 app.whenReady().then(() => {
   registerEduIpc();
   registerAutoLoginIpc();
+  registerCloudIpc();
   buildMenu();
   initDesktopShell();
   createWindow();

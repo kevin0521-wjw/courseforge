@@ -59,5 +59,33 @@ contextBridge.exposeInMainWorld('CourseForgeDesktop', {
     showWidget: () => ipcRenderer.invoke('shell:widget-show'),
     hideWidget: () => ipcRenderer.invoke('shell:widget-hide'),
     toggleWidget: () => ipcRenderer.invoke('shell:widget-toggle')
+  },
+
+  /**
+   * WebDAV 云同步（可选功能）：HTTP 由主进程代发（网页版受 CORS 限制）。
+   * 密码两条路：页面把密码交一次（saveCred 后立即丢弃），之后 useStored
+   * 让主进程用加密存储里的那份 —— 与教务账号同一套「只存密文、不回传」的规矩。
+   * 入参在桥上就做类型收敛，主进程拿到的永远是干净类型。
+   */
+  cloud: {
+    upload: (p) => ipcRenderer.invoke('cloud:upload', {
+      url: String((p && p.url) || ''),
+      username: String((p && p.username) || ''),
+      password: String((p && p.password) || ''),
+      body: (typeof (p && p.body) === 'string') ? p.body : null,
+      useStored: !(p && p.password)
+    }),
+    download: (p) => ipcRenderer.invoke('cloud:download', {
+      url: String((p && p.url) || ''),
+      username: String((p && p.username) || ''),
+      password: String((p && p.password) || ''),
+      useStored: !(p && p.password)
+    }),
+    saveCred: (p) => ipcRenderer.invoke('cloud:cred-save', {
+      username: String((p && p.username) || ''),
+      password: String((p && p.password) || '')
+    }),
+    credStatus: () => ipcRenderer.invoke('cloud:cred-status'),
+    credClear: () => ipcRenderer.invoke('cloud:cred-clear')
   }
 });

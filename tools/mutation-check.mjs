@@ -45,6 +45,8 @@ const FILES = {
   app: path.join(ROOT, 'web/js/app.js'),
   core: path.join(ROOT, 'web/js/core.js'),
   remind: path.join(ROOT, 'web/js/remind.js'),
+  webdav: path.join(ROOT, 'web/js/webdav.js'),
+  webdavClient: path.join(ROOT, 'desktop/webdav-client.js'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
 const FIXTURE = 'tests/fixtures/cjk-timetable-rotated.pdf';
@@ -1131,6 +1133,66 @@ function onlyMatch(i) {
     file: 'app',
     apply: (s) => (s.includes(anchor)
       ? s.replace(anchor, '    if (false) { // MUTANT（守卫被拆）')
+      : s)
+  });
+}
+
+// 78) 协议白名单失效：file:// / ftp:// 也能过配置清洗（URL 解析层会放行任意协议）
+{
+  const anchor = "    if (!/^https?:\\/\\//i.test(url)) return null;";
+  mutations.push({
+    name: 'normalizeConfig：协议白名单失效（file:// / ftp:// 混进 WebDAV 配置）',
+    file: 'webdav',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    // MUTANT（不再验协议）')
+      : s)
+  });
+}
+
+// 79) 云端载荷安检失效：服务器返回什么都直接进工作区
+{
+  const anchor = '    if (data.version === 2 && Array.isArray(data.semesters)) return data;';
+  mutations.push({
+    name: 'validateBackupText：结构安检失效（云端返回什么都当合法备份）',
+    file: 'webdav',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    return data; // MUTANT（不再验结构）')
+      : s)
+  });
+}
+
+// 80) 认证头被拆：Basic 头变成空串（所有请求裸奔，服务器必然 401）
+{
+  const anchor = "    return 'Basic ' + Buffer.from(String(username || '') + ':' + String(password || ''), 'utf8').toString('base64');";
+  mutations.push({
+    name: 'webdav-client：认证头被拆（请求不带 Basic 凭据，必然 401）',
+    file: 'webdavClient',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "    return ''; // MUTANT（认证头不再生成）")
+      : s)
+  });
+}
+
+// 81) 重定向不再跟随：坚果云式甩地址直接当失败
+{
+  const anchor = '        current = new URL(res.headers.location, current).href;';
+  mutations.push({
+    name: 'webdav-client：302 重定向不再跟随（服务器甩一次地址就报错）',
+    file: 'webdavClient',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "        return { ok: false, status: res.status, message: 'MUTANT: 3xx 当失败' };")
+      : s)
+  });
+}
+
+// 82) 云同步配置不再落盘：保存按钮变成安慰剂
+{
+  const anchor = '    saveCloudCfg(toStore);';
+  mutations.push({
+    name: 'onCloudSave：配置不再落盘（保存按钮点了白点，下次全要重填）',
+    file: 'app',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    // MUTANT: 配置不再持久化')
       : s)
   });
 }

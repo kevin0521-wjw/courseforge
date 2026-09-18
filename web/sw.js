@@ -5,7 +5,7 @@
  */
 // 缓存名带版本号：内容一改就要升版本，否则老用户会一直吃旧缓存。
 // 升版本后 activate 会清掉旧缓存，实现「换版本即失效」。
-const CACHE = 'courseforge-v9';
+const CACHE = 'courseforge-v10';
 // 预缓存清单必须与 index.html 里的 <script src> 完全对齐 ——
 // 漏掉任何一个，首次离线访问时该脚本会 fetch 失败并 fallback 到 index.html，
 // 把 HTML 当 JS 返回，脚本解析报错、应用整个崩掉。
@@ -27,6 +27,7 @@ const ASSETS = [
   './js/edu-html.js',
   './js/ics.js',
   './js/share-image.js',
+  './js/webdav.js',
   './js/importer.js',
   './js/app.js',
   './icon.svg',

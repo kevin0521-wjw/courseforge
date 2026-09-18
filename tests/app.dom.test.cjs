@@ -1291,3 +1291,92 @@ D('分享图复制：jsdom 不支持剪贴板 → 明确提示改用保存，按
     assert.equal(btn.disabled, false, '提示降级后按钮必须恢复可点');
   });
 });
+
+// ==================== WebDAV 云同步接线（P3 后 / v1.0） ====================
+
+D('云同步：设置抽屉里有云同步区，打开后状态行有内容（没有桌面桥时说明当前环境）', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    assert.ok(doc.getElementById('cloudUrl'), 'index.html 应有云同步服务器地址输入框');
+    assert.ok(doc.getElementById('cloudUser'));
+    assert.ok(doc.getElementById('cloudPass'));
+    assert.ok(doc.querySelector('[data-action="cloud-save"]'), '保存配置按钮必须在');
+    assert.ok(doc.querySelector('[data-action="cloud-upload"]'));
+    assert.ok(doc.querySelector('[data-action="cloud-download"]'));
+
+    doc.querySelector('[data-action="open-settings"]').click();
+    await flush();
+    const state = doc.getElementById('cloudState').textContent;
+    assert.ok(state && state !== '—', '打开设置后 cloudState 必须有说明文字，实际：' + JSON.stringify(state));
+    assert.match(state, /不支持/, 'jsdom 无桌面桥无 fetch，应明说当前环境不支持');
+  });
+});
+
+D('云同步：保存配置 → 落盘 localStorage；勾选记住密码才存密码（网页端明文本机）', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+
+    // 没填全就保存 → 提示且不落盘
+    doc.getElementById('cloudUrl').value = 'https://dav.example.com/dav/';
+    doc.querySelector('[data-action="cloud-save"]').click();
+    await flush();
+    assert.match(doc.getElementById('toast').textContent, /完整填写/);
+    assert.equal(w.localStorage.getItem('wb_courseforge_webdav_cfg'), null, '配置不全时不能写入');
+
+    // 填全、不勾记住 → 存 url/用户名，不存密码
+    doc.getElementById('cloudUser').value = 'kevin';
+    doc.getElementById('cloudPass').value = 'app-pass';
+    doc.querySelector('[data-action="cloud-save"]').click();
+    await flush();
+    let cfg = JSON.parse(w.localStorage.getItem('wb_courseforge_webdav_cfg'));
+    assert.equal(cfg.url, 'https://dav.example.com/dav', '尾部斜杠应被清洗');
+    assert.equal(cfg.username, 'kevin');
+    assert.equal(cfg.password, undefined, '不记住密码时绝不能落盘');
+
+    // 勾选记住 → 网页端明文存（这是勾选时已被告知的取舍）
+    doc.getElementById('cloudRemember').checked = true;
+    doc.querySelector('[data-action="cloud-save"]').click();
+    await flush();
+    cfg = JSON.parse(w.localStorage.getItem('wb_courseforge_webdav_cfg'));
+    assert.equal(cfg.password, 'app-pass', '勾选记住后网页端按明文本机存储');
+  });
+});
+
+D('云同步：jsdom（无桥无 fetch）点上传/恢复 → 明确提示不支持且按钮恢复可点', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    doc.getElementById('cloudUrl').value = 'https://dav.example.com/dav';
+    doc.getElementById('cloudUser').value = 'kevin';
+    doc.getElementById('cloudPass').value = 'app-pass';
+
+    const up = doc.getElementById('btnCloudUpload');
+    up.click();
+    await flush();
+    assert.match(doc.getElementById('toast').textContent, /不支持云同步/);
+    assert.equal(up.disabled, false, '提示后按钮必须恢复可点');
+
+    const down = doc.getElementById('btnCloudDownload');
+    down.click();
+    await flush();
+    assert.match(doc.getElementById('toast').textContent, /不支持云同步/);
+    assert.equal(down.disabled, false);
+  });
+});
+
+D('云同步：服务器地址只认 http(s)，ftp/file 直接拒（不发任何请求）', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    doc.getElementById('cloudUrl').value = 'ftp://dav.example.com';
+    doc.getElementById('cloudUser').value = 'kevin';
+    doc.getElementById('cloudPass').value = 'app-pass';
+    doc.querySelector('[data-action="cloud-upload"]').click();
+    await flush();
+    assert.match(doc.getElementById('toast').textContent, /完整填写/, '非法地址应被配置清洗拦下');
+    // 坏配置也不该留下任何云同步痕迹
+    assert.equal(w.localStorage.getItem('wb_courseforge_webdav_cfg'), null);
+  });
+});

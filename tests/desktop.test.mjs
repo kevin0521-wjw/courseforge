@@ -168,6 +168,22 @@ test('main.js：注册了全部教务 IPC 通道，且都在 whenReady 之后注
     'registerAutoLoginIpc() 同样应在 whenReady 回调里调用');
 });
 
+test('main.js：注册了全部 WebDAV 云同步通道（密码规则与教务账号同款）', () => {
+  assert.ok(/ipcMain\.handle\(\s*'cloud:upload'/.test(MAIN_SRC));
+  assert.ok(/ipcMain\.handle\(\s*'cloud:download'/.test(MAIN_SRC));
+  assert.ok(/ipcMain\.handle\(\s*'cloud:cred-save'/.test(MAIN_SRC));
+  assert.ok(/ipcMain\.handle\(\s*'cloud:cred-status'/.test(MAIN_SRC));
+  assert.ok(/ipcMain\.handle\(\s*'cloud:cred-clear'/.test(MAIN_SRC));
+  // 注册时机与教务通道一致：必须在 app ready 之后
+  assert.ok(/app\.whenReady\(\)\.then\(\(\) => \{[\s\S]*registerCloudIpc\(\)/.test(MAIN_SRC),
+    'registerCloudIpc() 也应在 whenReady 回调里调用');
+  // 凭据必须独立成文件：清教务账号不能连坐清掉 WebDAV 密码，反之亦然
+  assert.ok(/webdav-credentials\.json/.test(MAIN_SRC), 'WebDAV 凭据文件必须独立命名');
+  // 存的密码必须是「存过的用户名与本次一致」才允许使用，防止换账号拿旧密码去撞
+  assert.ok(/saved\.username === args\.username/.test(MAIN_SRC),
+    '用存储密码前必须校验用户名一致');
+});
+
 test('main.js：菜单发现的地址必须是站内 /jwglxt/ 路径（防被篡改的页面带跑会话）', () => {
   // 发现逻辑来自教务页面本身，属于「外部输入」：只允许站内绝对路径，
   // 且必须拼到已登录的 origin 上，不能拿页面给的完整 URL 直接请求
@@ -206,6 +222,9 @@ test('preload.js：不把 ipcRenderer 整个暴露给页面', async () => {
   assert.ok(!/\bipcRenderer:\s*ipcRenderer\b/.test(preload));
   const invokes = [...preload.matchAll(/ipcRenderer\.invoke\(\s*'([\w:-]+)'/g)].map((m) => m[1]);
   assert.deepEqual(invokes.sort(), [
+    // WebDAV 云同步：上传/下载/凭据三件套（密码规则与教务账号同款）
+    'cloud:cred-clear', 'cloud:cred-save', 'cloud:cred-status',
+    'cloud:download', 'cloud:upload',
     'edu:close', 'edu:courses', 'edu:cred-clear', 'edu:cred-status',
     'edu:grab', 'edu:login', 'edu:open',
     // 桌面外壳：推送课表快照 + 读写小组件显隐状态
@@ -226,6 +245,7 @@ test('preload-widget.js：小组件窗口的能力面比主窗口更小', async 
   assert.deepEqual(invokes.sort(), ['widget:hide', 'widget:open-main', 'widget:view'],
     '小组件是一个纯展示窗口，能力面扩大必须是有意为之');
   assert.ok(!/edu:/.test(src), '小组件不该有任何教务系统通道');
+  assert.ok(!/cloud:/.test(src), '小组件也不该有任何云同步通道（凭据只留在主窗口链路里）');
 
   // 订阅走 ipcRenderer.on；回调只能收数据，不能把 IpcRendererEvent 透传给页面
   // （那个对象上挂着 sender，等于把主进程引用递了出去）

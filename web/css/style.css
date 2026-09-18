@@ -626,6 +626,8 @@ body {
 input[type="text"],
 input[type="number"],
 input[type="date"],
+input[type="url"],
+input[type="password"],
 select {
   width: 100%;
   min-height: 42px;
@@ -637,6 +639,9 @@ select {
   background: var(--panel);
   color: var(--text);
 }
+
+/* 云同步区：三行输入竖排留缝（url / 用户名 / 密码） */
+#cloudField > input { margin-bottom: 6px; }
 
 input:focus, select:focus {
   outline: none;
