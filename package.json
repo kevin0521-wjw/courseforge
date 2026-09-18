@@ -8,6 +8,8 @@
     "check:mutation": "node tools/mutation-check.mjs",
     "check:browser": "node tools/browser-selftest.mjs",
     "check:webui": "node tools/webui-selftest.mjs",
+    "check:import-web": "node tools/import-web-selftest.mjs",
+    "check:import-edu": "node tools/import-edu-selftest.mjs",
     "check:share": "node tools/share-image-selftest.mjs",
     "check:desktop": "node tools/desktop-selftest.mjs",
     "check:package": "node tools/verify-package.mjs",

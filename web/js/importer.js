@@ -496,6 +496,24 @@
     return out;
   }
 
+  /**
+   * OCR 输出归一化。
+   *
+   * Tesseract（chi_sim）对中文的通病是字与字之间插空格（「高 等 数 学 A 1」），
+   * 而行解析靠「周X / 节次 / 周次」这些紧致片段切分行内成分，被拆散就全废
+   * （真机实测：课名只取到第一个字「高」「数据」「大」）。
+   * OCR 出来的是纯识别文本，行内空格不承载语义（课名/地点/人名都不含空格），
+   * 所以按行去掉全部空白是安全且最稳的归一化。
+   *
+   * ⚠️ 只准用在 OCR 输出上：文字层 PDF / 用户粘贴文本的空格承载列分隔语义，
+   * 在那边做同样的事会把同一行里的两门课粘成一团。
+   */
+  function normalizeOcrText(text) {
+    return String(text == null ? '' : text).split(/\r?\n/).map(function (line) {
+      return line.replace(/[ \t\u00a0\u3000]+/g, '');
+    }).join('\n');
+  }
+
   /** OCR 一张图片并解析 */
   function runOcr(file) {
     setStatus('正在加载识别引擎（首次约 15MB，请稍候）…');
@@ -507,7 +525,7 @@
       });
     }).then(function (res) {
       setProgress(null);
-      var text = (res && res.data && res.data.text) || '';
+      var text = normalizeOcrText((res && res.data && res.data.text) || '');
       if (!text.trim()) {
         setStatus('未识别出文字，请确认照片清晰且包含课程信息');
         return;
@@ -541,7 +559,7 @@
     return page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise
       .then(function () { return ensureOcr(); })
       .then(function (worker) { return worker.recognize(canvas); })
-      .then(function (res) { return (res && res.data && res.data.text) || ''; });
+      .then(function (res) { return normalizeOcrText((res && res.data && res.data.text) || ''); });
   }
 
   /**
@@ -936,6 +954,8 @@
     close: closeModal,
     // 供测试与桌面端集成使用：把教务系统页面 HTML 直接喂进导入链路
     feedEduHtml: feedEduHtml,
-    switchTab: switchTab
+    switchTab: switchTab,
+    // OCR 输出归一化（字间空格修复）；导出供测试直接验证
+    normalizeOcrText: normalizeOcrText
   };
 })();

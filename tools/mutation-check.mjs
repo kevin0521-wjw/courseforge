@@ -1246,6 +1246,19 @@ function onlyMatch(i) {
   });
 }
 
+// 87) OCR 归一化变安慰剂：chi_sim 字间空格不被清理，OCR 导入的课名只剩单字
+//     （2026-09-19 两端真机探针抓到的真问题：五门课全变成「高」「数据」「大」…）
+{
+  mutations.push({
+    name: 'normalizeOcrText 不去行内空白（OCR 课名只剩单字，照片导入废掉）',
+    file: 'importer',
+    apply: (s) => s.replace(
+      /return line\.replace\(\/\[ \\t\\u00a0\\u3000\]\+\/g, ''\);/,
+      "return line; // MUTANT（不做归一化）"
+    )
+  });
+}
+
 // ==================== 运行 ====================
 // 保险 0：开始之前先确认工作区是干净的。
 // 曾经发生过：上一次运行被 SIGTERM（超时）强杀，把 // MUTANT 留在了源文件里，

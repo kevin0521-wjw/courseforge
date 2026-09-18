@@ -91,7 +91,8 @@ function makeEl(id) {
   };
 }
 
-function makeDom() {
+/** 测试也能直接拿到 DOM 桩：OCR 归一化等纯逻辑测试复用同一套最小环境 */
+export function makeDom() {
   const els = {};
   const statusHistory = [];
   const getEl = (id) => (els[id] = els[id] || makeEl(id));
