@@ -18,6 +18,14 @@ contextBridge.exposeInMainWorld('CourseForgeDesktop', {
   electronVersion: process.versions.electron || '',
 
   /**
+   * 随包 CMap 基地址（cfcmap:// 特权协议，主进程只服务 cmaps/ 目录）。
+   * Chromium 禁止 file:// 页面 fetch —— 没有它，桌面端解中文 PDF 必需的
+   * .bcmap 只能靠 CDN 兜底，弱网/离线时整页文字解不出。
+   * importer.js 会把它排在 CMap 源链最前面；取不到自然回落 CDN。
+   */
+  cmapBase: 'cfcmap://cmaps/',
+
+  /**
    * 教务系统直连：浏览器里做不了（跨域），由主进程代取页面
    *  open(url)      → 打开一个独立窗口让用户登录教务系统
    *  grab()         → 读取该窗口当前页面的 HTML（含同源 iframe）

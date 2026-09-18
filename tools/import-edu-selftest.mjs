@@ -2,12 +2,9 @@
  * 桌面端导入链路真机自检（npm run check:import-edu，自带假教务服务器，不碰真教务）
  *
  * 覆盖：
- *   1. PDF 导入：真文件 → CDP setFileInputFiles → pdf.js（CDN 懒加载 + 源诊断）
+ *   1. PDF 导入：真文件 → CDP setFileInputFiles → pdf.js（CDN 懒加载 + cfcmap:// 随包协议源）
  *   2. 照片 OCR：canvas 现画课表图 → Tesseract chi_sim（含 normalizeOcrText 归一化回归）
- *   3. 教务直连端到端：本地「假教务系统」（正方 V9 登录页同构 + kbList 接口），真走 edu:open/edu:login/edu:courses 三个 IPC
- *   1. PDF 导入：真文件 → CDP setFileInputFiles → pdf.js（CDN 懒加载）
- *   2. 照片 OCR：canvas 现画课表图 → Tesseract chi_sim
- *   3. 教务直连端到端：本地起「假教务系统」（正方 V9 登录页同构 + kbList 接口），
+ *   3. 教务直连端到端：本地「假教务系统」（正方 V9 登录页同构 + kbList 接口），
  *      真走 edu:open/edu:login/edu:courses 三个 IPC —— 不碰真教务、不用真账号。
  * 退出码 0 = 可行链路全部跑通。
  */
@@ -275,6 +272,34 @@ try {
   })()`, 60000));
   check('PDF：CDN 候选诊断（npmmirror/jsdelivr/unpkg）', true,
     cdnDiag.results.join(' / ') + '，pdfjsLib=' + cdnDiag.libLoaded);
+
+  // cfcmap:// 随包协议源：Chromium 禁止 file:// 页面 fetch，之前 CMap 全靠 CDN 兜底。
+  // 这里从 file:// 页面里真实 fetch 一个中文 CMap，证明协议源在真机可用；
+  // 再验证路径穿越被 handler 拦下（安全边界，绝不能 200）。
+  const cmapDiag = JSON.parse(await evalJs(cdp, `(async function () {
+    var base = window.CourseForgeDesktop && window.CourseForgeDesktop.cmapBase;
+    if (!base) return JSON.stringify({ hasBase: false });
+    var out = { hasBase: true };
+    try {
+      var r = await fetch(base + 'UniGB-UCS2-H.bcmap');
+      var b = await r.arrayBuffer();
+      out.ok = r.ok; out.bytes = b.byteLength;
+    } catch (e) { out.err = String(e && e.message || e).slice(0, 120); }
+    try {
+      var t = await fetch(base + '..%2F..%2Fmain.js');
+      out.traverseStatus = t.status; out.traverseBytes = (await t.arrayBuffer()).byteLength;
+    } catch (e) { out.traverseErr = String(e && e.message || e).slice(0, 120); }
+    return JSON.stringify(out);
+  })()`, 30000));
+  check('PDF：cfcmap:// 协议源可 fetch（file:// 页面 → 随包 CMap）',
+    cmapDiag.hasBase && cmapDiag.ok && cmapDiag.bytes > 0,
+    cmapDiag.hasBase
+      ? 'UniGB-UCS2-H.bcmap=' + cmapDiag.bytes + ' 字节' + (cmapDiag.err ? ' | ' + cmapDiag.err : '')
+      : '桥上没有 cmapBase');
+  check('PDF：cfcmap:// 路径穿越被拦（../../main.js 不得 200）',
+    !cmapDiag.hasBase || cmapDiag.traverseStatus !== 200,
+    'status=' + cmapDiag.traverseStatus + ' bytes=' + cmapDiag.traverseBytes +
+      (cmapDiag.traverseErr ? ' | ' + cmapDiag.traverseErr : ''));
 
   const doc = await cdp.send('DOM.getDocument', { depth: 1 });
   const q = await cdp.send('DOM.querySelector', { nodeId: doc.root.nodeId, selector: '#importPdf' });

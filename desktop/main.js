@@ -1,13 +1,15 @@
 /**
  * CourseForge 桌面端主进程
- * 复用 web/ 目录下的页面，通过 file:// 协议加载
+ * 复用 web/ 目录下的页面：窗口走 file:// 加载，随包 cmaps/ 走 cfcmap:// 特权协议
+ * （file:// 页面 fetch 不了本地资源，CMap 必须由这个协议供给，见下方说明）
  *
  * 相比网页版，桌面端多一项能力：教务系统直连。
  * 浏览器里 JS 受同源策略限制拿不到教务系统页面，主进程没有这个限制，
  * 因此由主进程开一个窗口让用户自己登录，再按需把当前页 HTML 交回渲染进程解析。
  */
-const { app, BrowserWindow, Menu, shell, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, shell, ipcMain, safeStorage, protocol, net } = require('electron');
 const path = require('path');
+const { pathToFileURL } = require('node:url');
 const EduLogin = require('./edu-login.js');
 const { createCredStore } = require('./cred-store.js');
 const { createWebdavClient } = require('./webdav-client.js');
@@ -65,6 +67,54 @@ let eduWindow = null;
 const WEB_DIR = app.isPackaged
   ? path.join(process.resourcesPath, 'web')
   : path.join(__dirname, '..', 'web');
+
+// ==================== 随包 CMap 协议（cfcmap://）====================
+/**
+ * 为什么需要它：主窗口仍是 file:// 加载（改动最小、也保住了既有的安全边界），
+ * 但 Chromium 【禁止 file:// 页面 fetch 任何资源】——于是随包的 cmaps/
+ * （pdf.js 解中文 PDF 必需的 168 个 .bcmap）在桌面端永远取不到，
+ * 之前全靠 CDN 兜底：真机弱网/离线时中文 PDF 会「一个字都解不出」。
+ *
+ * 解法：注册一个支持 fetch API 的特权协议，只服务 WEB_DIR/cmaps/ 这个目录，
+ * 页面把它作为 CMap 首选源。取不到时 importer.js 的实试逻辑自然落到 CDN，
+ * 行为与网页版完全一致。
+ *
+ * 安全边界：handler 只映射 cmaps/ 目录，且 resolve 后必须仍在该目录内
+ * （../ 路径穿越直接 403）；除这个协议外不注册任何其它资源路径。
+ * ⚠️ registerSchemesAsPrivileged 必须在 app ready 之前调用，晚了无效。
+ */
+const CMAP_SCHEME = 'cfcmap';
+const CMAP_BASE = path.join(WEB_DIR, 'cmaps');
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: CMAP_SCHEME,
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true }
+  }
+]);
+
+/** 注册 cfcmap:// 处理器（在 app ready 之后、创建窗口之前调用一次） */
+function registerCmapProtocol() {
+  protocol.handle(CMAP_SCHEME, (request) => {
+    // 约定 URL 形如 cfcmap://cmaps/<文件名>：host 固定 cmaps，path 是文件名
+    const u = new URL(request.url);
+    if (u.hostname !== 'cmaps') {
+      return new Response('forbidden', { status: 403 });
+    }
+    let name;
+    try {
+      name = decodeURIComponent(u.pathname).replace(/^\/+/, '');
+    } catch {
+      return new Response('bad request', { status: 400 });
+    }
+    const target = path.resolve(CMAP_BASE, name);
+    if (!target.startsWith(CMAP_BASE + path.sep)) {
+      return new Response('forbidden', { status: 403 }); // 路径穿越
+    }
+    return net.fetch(pathToFileURL(target).toString())
+      ['catch'](() => new Response('not found', { status: 404 }));
+  });
+}
 
 function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -737,6 +787,7 @@ function buildMenu() {
 }
 
 app.whenReady().then(() => {
+  registerCmapProtocol();
   registerEduIpc();
   registerAutoLoginIpc();
   registerCloudIpc();

@@ -1259,6 +1259,19 @@ function onlyMatch(i) {
   });
 }
 
+// 88) 桌面端 CMap 协议源被静默丢弃：file:// 页面 fetch 不了随包 cmaps/，
+//     桌面端中文 PDF 解码全靠 CDN 兜底 —— 弱网/离线时一个字都解不出
+{
+  mutations.push({
+    name: '桌面端协议源被丢弃（CMAP_ORDER 退化成 CMAP_SOURCES，弱网退回 CDN）',
+    file: 'importer',
+    apply: (s) => s.replace(
+      /var CMAP_ORDER = DESKTOP_CMAP_BASE \? \[DESKTOP_CMAP_BASE\]\.concat\(CMAP_SOURCES\) : CMAP_SOURCES;/,
+      'var CMAP_ORDER = CMAP_SOURCES; // MUTANT（桌面协议源被丢弃）'
+    )
+  });
+}
+
 // ==================== 运行 ====================
 // 保险 0：开始之前先确认工作区是干净的。
 // 曾经发生过：上一次运行被 SIGTERM（超时）强杀，把 // MUTANT 留在了源文件里，
@@ -1274,10 +1287,13 @@ for (const p of Object.values(FILES)) {
 }
 
 function runTests() {
-  // 单轮全量测试的上限。正常一轮 30~60 秒；超过说明这条变异让某个测试挂死
+  // 单轮全量测试的上限。正常一轮 30~90 秒；超过说明这条变异让某个测试挂死
   // （实测：某条变异让 jsdom 用例死循环，execSync 没超时就挂了 45 分钟）。
   // 超时必须强杀并标成「无效判定」—— 它既不是护栏有效也不是假护栏。
-  const TEST_TIMEOUT_MS = 180000;
+  // ⚠️ 2026-09-19 从 180s 提到 300s：CMap 换源测试新增了 4 次真实 PDF 解析后，
+  //    「扶正角度量化」变异的单轮时长刚好压线超时被误杀成无效判定。
+  //    这个上限只防【死循环】，不是性能门槛 —— 宁可宽也不能误杀。
+  const TEST_TIMEOUT_MS = 300000;
   try {
     return execSync(`"${NODE}" --test`, {
       encoding: 'utf8',
@@ -1381,6 +1397,11 @@ for (const m of mutations) {
     console.log(`  ⚠️ 未取到测试摘要（输出 ${out.length} 字符）。尾部内容：`);
     console.log('  ' + out.slice(-400).split('\n').join('\n  '));
     stats.inconclusive++;
+    // ⚠️ 必须 continue：无效判定的结论「根本不能用」——输出可能是被强杀时的
+    // 残缺内容，哪怕里面有 not ok 行也不能算「护栏有效」。
+    // （曾经漏了这句：同一条变异被同时计入「无效判定」和「护栏有效」，
+    //   汇总各分类之和超过变异总数，等于 quietly 放行了不可信结论。）
+    continue;
   }
   console.log(`  结果: pass=${summary ? summary[1] : '?'} fail=${summary ? summary[2] : '?'}`);
   if (failed.length) {
@@ -1405,6 +1426,18 @@ console.log(
   `\n==== 汇总：护栏有效 ${stats.red} · 假护栏 ${stats.fake} · ` +
   `等价变异 ${stats.equivalent} · 跳过 ${stats.skipped} · 无效判定 ${stats.inconclusive} ====`
 );
+
+// 收尾自检：各分类之和必须等于变异总数 —— 每条变异只能落入一个分类。
+// 曾经因为「无效判定」分支漏了 continue，同一条变异被同时计入
+// 「无效判定」和「护栏有效」，之和凭空多出 1：这种不一致本身就是
+// 工具不可信的信号，必须当场拒绝出结论。
+{
+  const sum = stats.red + stats.fake + stats.equivalent + stats.skipped + stats.inconclusive;
+  if (sum !== mutations.length) {
+    console.error(`\n❌ 分类之和 ${sum} ≠ 变异总数 ${mutations.length} —— 统计逻辑有双计/漏计，本轮结论不可信。`);
+    process.exit(2);
+  }
+}
 if (stats.fake || stats.inconclusive) {
   console.error('❌ 存在假护栏或无效判定，变异测试【未通过】。');
 }

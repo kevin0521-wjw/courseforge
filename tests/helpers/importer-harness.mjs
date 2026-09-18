@@ -129,9 +129,12 @@ export function patchCMapSources(sourceCode, sources) {
 
 /**
  * 跑一次完整的「喂 PDF → 解析」流程。
+ * @param {object} opts
+ * @param {string} [opts.desktopCmapBase] 模拟桌面端 preload 注入的 CourseForgeDesktop.cmapBase
+ *        （不传 = 网页版环境，没有 CourseForgeDesktop）
  * @returns {{summary:string, status:string, history:string[], win:object}}
  */
-export async function runImporter({ pdfPath, pdfjsLib, sourceCode, timeoutMs = 60_000 }) {
+export async function runImporter({ pdfPath, pdfjsLib, sourceCode, timeoutMs = 60_000, desktopCmapBase }) {
   const src = sourceCode || readFileSync(IMPORTER, 'utf8');
   const env = makeDom();
 
@@ -142,6 +145,10 @@ export async function runImporter({ pdfPath, pdfjsLib, sourceCode, timeoutMs = 6
     addEventListener() {},
     pdfjsLib // 直接注入，跳过 CDN 脚本加载
   };
+  if (desktopCmapBase) {
+    // 模拟桌面端 preload 注入的桥（importer.js 只读 cmapBase 这一个字段）
+    win.CourseForgeDesktop = { isDesktop: true, cmapBase: desktopCmapBase };
+  }
   win.window = win;
   win.self = win;
 

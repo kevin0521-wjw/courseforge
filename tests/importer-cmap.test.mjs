@@ -119,3 +119,80 @@ test('源码：CMAP_SOURCES 必须是【多个】源，且按可靠性排序（�
     '必须包含境内镜像（registry.npmmirror.com）：jsdelivr/unpkg 在大陆经常不可达'
   );
 });
+
+// ==================== 桌面端：cfcmap:// 随包协议源 ====================
+/**
+ * 桌面端主窗口是 file:// 加载，Chromium 禁止 file:// 页面 fetch ——
+ * 相对路径 'cmaps/' 在桌面端必然失败，之前全靠 CDN 兜底，
+ * 弱网/离线时中文 PDF 一个字都解不出。
+ * 修复：主进程注册 cfcmap:// 特权协议只服务随包 cmaps/，preload 交来基地址，
+ * importer 把它插到源链最前。
+ */
+
+test('桌面端：协议源排最前，其余源全坏时仍能解出文字（弱网不靠 CDN）', { skip }, async () => {
+  // 把随包相对路径与 CDN 全部置坏 —— 模拟「协议源若不生效就彻底没辙」的极端情况
+  const patched = patchCMapSources(readFileSync(IMPORTER, 'utf8'), [MISSING_CMAPS]);
+  assert.ok(patched, '未能替换 CMAP_SOURCES');
+
+  const r = await runImporter({
+    pdfPath: FIXTURE,
+    pdfjsLib: makePdfJsLib(),
+    sourceCode: patched,
+    // SmartCMapFactory 对非 http 源按本地文件读取，等价于协议源命中随包目录
+    desktopCmapBase: CMAPS + '/'
+  });
+  assert.match(
+    r.summary,
+    COURSE_COUNT,
+    '桌面端应优先用随包协议源解出文字，而不是落到 CDN；实际状态：' + r.status
+  );
+});
+
+test('网页版：没有 CourseForgeDesktop 时行为与旧版完全一致', { skip }, async () => {
+  const patched = patchCMapSources(readFileSync(IMPORTER, 'utf8'), [CMAPS + '/']);
+  assert.ok(patched, '未能替换 CMAP_SOURCES');
+  const r = await runImporter({ pdfPath: FIXTURE, pdfjsLib: makePdfJsLib(), sourceCode: patched });
+  assert.match(r.summary, COURSE_COUNT, '网页版基线：本地 cmaps/ 可用即成功；状态：' + r.status);
+});
+
+test('源码：桌面端协议源必须插到源链最前（DESKTOP_CMAP_BASE / CMAP_ORDER）', () => {
+  const src = readFileSync(IMPORTER, 'utf8');
+  assert.match(
+    src,
+    /var DESKTOP_CMAP_BASE = \(window\.CourseForgeDesktop && window\.CourseForgeDesktop\.cmapBase\) \|\| null;/,
+    '必须从桌面桥读取 cmapBase（网页版没有桥，值为 null）'
+  );
+  assert.match(
+    src,
+    /var CMAP_ORDER = DESKTOP_CMAP_BASE \? \[DESKTOP_CMAP_BASE\]\.concat\(CMAP_SOURCES\) : CMAP_SOURCES;/,
+    'CMAP_ORDER 必须把桌面协议源插到 CMAP_SOURCES 最前面'
+  );
+  assert.doesNotMatch(
+    src,
+    /CMAP_SOURCES\.slice\(\)|CMAP_SOURCES\.filter\(/,
+    'openWithWorkingCMap 必须使用 CMAP_ORDER（含桌面协议源），不能直接消费 CMAP_SOURCES'
+  );
+});
+
+test('桌面端协议链路三件套：main 注册 / preload 暴露 / importer 消费', () => {
+  const mainSrc = readFileSync(join(ROOT, 'desktop', 'main.js'), 'utf8');
+  const preloadSrc = readFileSync(join(ROOT, 'desktop', 'preload.js'), 'utf8');
+
+  // main.js：ready 前注册特权协议；handler 限定 host 并防路径穿越
+  assert.match(mainSrc, /registerSchemesAsPrivileged/, 'main.js 必须注册 cfcmap 特权协议（且必须在 app ready 之前）');
+  assert.match(mainSrc, /supportFetchAPI: true/, '协议必须开 supportFetchAPI —— 页面要 fetch .bcmap');
+  assert.match(mainSrc, /u\.hostname !== 'cmaps'/, 'handler 必须限定 host=cmaps，不得变成任意文件读取');
+  assert.match(
+    mainSrc,
+    /startsWith\(CMAP_BASE \+ path\.sep\)/,
+    'handler 必须防路径穿越：resolve 后必须仍在 cmaps/ 目录内'
+  );
+  assert.match(
+    mainSrc,
+    /registerCmapProtocol\(\);\s*registerEduIpc/,
+    '协议处理器必须在创建窗口之前注册'
+  );
+
+  // preload.js：把基地址安全地交给页面
+  assert.match(preloadSrc, /cmapBase: 'cfcmap:\/\/cmaps\/'/, 'preload 必须暴露 cmapBase 基地址');
+});

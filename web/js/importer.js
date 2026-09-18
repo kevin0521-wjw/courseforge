@@ -63,6 +63,19 @@
   // 会话内记住「这次可用的源」，后续导入直接排到最前面，不重复试错。
   var cmapSourceCache = null;
 
+  /**
+   * 桌面端的 CMap 首选源 —— cfcmap:// 特权协议（主进程只服务随包 cmaps/ 目录）。
+   *
+   * 背景：桌面端主窗口是 file:// 加载，而 Chromium 【禁止 file:// 页面 fetch】，
+   * 上面的相对路径 'cmaps/' 在桌面端必然失败，之前只能靠 CDN 兜底 ——
+   * 真机弱网/离线时中文 PDF 会一个字都解不出。
+   * 桌面端主进程注册了 cfcmap:// 协议并由 preload 交来基地址，插到链首即可。
+   * 网页版没有 CourseForgeDesktop，此值为 null，源链与原来完全一致。
+   */
+  var DESKTOP_CMAP_BASE = (window.CourseForgeDesktop && window.CourseForgeDesktop.cmapBase) || null;
+  /** 实际尝试顺序：桌面端协议源在前（同源随包、零网络），其余照旧 */
+  var CMAP_ORDER = DESKTOP_CMAP_BASE ? [DESKTOP_CMAP_BASE].concat(CMAP_SOURCES) : CMAP_SOURCES;
+
   var bridge = null;          // { getSettings, apply, toast }
   var parsedItems = [];       // 解析结果（可编辑）
   var ocrWorker = null;       // Tesseract worker 缓存
@@ -593,8 +606,8 @@
    */
   function openWithWorkingCMap(buf) {
     var order = cmapSourceCache
-      ? [cmapSourceCache].concat(CMAP_SOURCES.filter(function (s) { return s !== cmapSourceCache; }))
-      : CMAP_SOURCES.slice();
+      ? [cmapSourceCache].concat(CMAP_ORDER.filter(function (s) { return s !== cmapSourceCache; }))
+      : CMAP_ORDER.slice();
 
     function tryAt(i) {
       if (i >= order.length) return Promise.resolve(null);
