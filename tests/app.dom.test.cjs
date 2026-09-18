@@ -1380,3 +1380,79 @@ D('云同步：服务器地址只认 http(s)，ftp/file 直接拒（不发任何
     assert.equal(w.localStorage.getItem('wb_courseforge_webdav_cfg'), null);
   });
 });
+
+// ==================== 检查更新接线（v1.1） ====================
+
+D('检查更新：无桌面桥时区块保持隐藏；jsdom 点按钮 → 明说「不支持」', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    const field = doc.getElementById('updateField');
+    assert.ok(field, 'index.html 应有检查更新区');
+    assert.equal(field.hidden, true, '网页版（无桌面桥）必须隐藏检查更新区');
+    doc.querySelector('[data-action="open-settings"]').click();
+    await flush();
+    assert.equal(field.hidden, true);
+    doc.getElementById('btnUpdateCheck').click();
+    await flush();
+    assert.match(doc.getElementById('updateState').textContent, /不支持|刷新即是最新/,
+      '点了按钮就要有明确交代，不能干等');
+  });
+});
+
+D('检查更新：mock 桥 available → 状态行含版本与 github 下载链接，按钮恢复可点', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    let called = 0;
+    w.CourseForgeDesktop = {
+      isDesktop: true, platform: 'win32',
+      update: {
+        check: () => {
+          called++;
+          return Promise.resolve({
+            ok: true, status: 'available', current: '0.1.0', latest: '0.2.0',
+            downloadUrl: 'https://github.com/kevin0521-wjw/courseforge/releases/tag/v0.2.0',
+            message: '发现新版本 v0.2.0（当前 v0.1.0）'
+          });
+        }
+      }
+    };
+    doc.querySelector('[data-action="open-settings"]').click();
+    await flush();
+    assert.equal(doc.getElementById('updateField').hidden, false, '有桌面桥就应显示检查更新区');
+    const btn = doc.getElementById('btnUpdateCheck');
+    btn.click();
+    await flush();
+    assert.equal(called, 1, '点一次按钮恰好查一次');
+    const state = doc.getElementById('updateState');
+    assert.match(state.textContent, /发现新版本 v0\.2\.0/);
+    const a = state.querySelector('a');
+    assert.ok(a, 'available 时必须给「前往下载」链接');
+    assert.equal(a.href, 'https://github.com/kevin0521-wjw/courseforge/releases/tag/v0.2.0');
+    assert.equal(a.rel, 'noopener noreferrer');
+    assert.equal(btn.disabled, false, '检查结束后按钮必须恢复可点');
+  });
+});
+
+D('检查更新：mock 桥 latest → 显示「已是最新」，不给下载链接', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    w.CourseForgeDesktop = {
+      isDesktop: true, platform: 'win32',
+      update: {
+        check: () => Promise.resolve({
+          ok: true, status: 'latest', current: '0.2.0', latest: '0.2.0',
+          downloadUrl: 'https://github.com/kevin0521-wjw/courseforge/releases/latest',
+          message: '已是最新版本（v0.2.0）'
+        })
+      }
+    };
+    doc.querySelector('[data-action="open-settings"]').click();
+    await flush();
+    doc.getElementById('btnUpdateCheck').click();
+    await flush();
+    const state = doc.getElementById('updateState');
+    assert.match(state.textContent, /已是最新/);
+    assert.equal(state.querySelector('a'), null, '已是最新时不该放下载链接（避免误引导重装）');
+  });
+});

@@ -11,6 +11,7 @@ const path = require('path');
 const EduLogin = require('./edu-login.js');
 const { createCredStore } = require('./cred-store.js');
 const { createWebdavClient } = require('./webdav-client.js');
+const { createUpdateChecker, RELEASES_PAGE } = require('./update-checker.js');
 const { createWidgetStore } = require('./widget-store.js');
 const { createShell } = require('./desktop-shell.js');
 
@@ -677,6 +678,24 @@ function registerCloudIpc() {
   });
 }
 
+// ==================== 检查更新（v1.1） ====================
+//
+// 只查版本 + 给下载链接，不自动下载安装 —— 安装包未签名，静默升级必被 SmartScreen 拦。
+// 版本源是本仓库的 GitHub Releases；没发布过版本（404）是预期态，明说而不是报错。
+
+const updateChecker = createUpdateChecker({ http: require('http'), https: require('https') });
+
+function registerUpdateIpc() {
+  ipcMain.handle('update:check', async () => {
+    const result = await updateChecker.check(RELEASES_PAGE, app.getVersion());
+    // 链接在 checker 里已过 github.com 白名单；这里再兜一道，绝不把别的字符串带给页面
+    if (result.downloadUrl && !/^https:\/\/github\.com\//.test(result.downloadUrl)) {
+      result.downloadUrl = RELEASES_PAGE;
+    }
+    return result;
+  });
+}
+
 // 精简菜单：保留复制/粘贴/刷新等基础能力
 function buildMenu() {
   const template = [
@@ -721,6 +740,7 @@ app.whenReady().then(() => {
   registerEduIpc();
   registerAutoLoginIpc();
   registerCloudIpc();
+  registerUpdateIpc();
   buildMenu();
   initDesktopShell();
   createWindow();

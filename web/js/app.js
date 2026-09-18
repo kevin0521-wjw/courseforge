@@ -415,6 +415,60 @@
     return (typeof window.fetch === 'function') ? 'web' : 'none';
   }
 
+  // ==================== 检查更新（仅桌面端，v1.1）====================
+  // 只查版本 + 给官方下载页链接；不自动下载安装（未签名的安装包静默升级必被系统拦）。
+
+  /** 状态行：只允许「文本 + 受控 <a>」。链接地址来自主进程（已过 github.com 白名单），
+   *  但插入 DOM 一律用 createElement，绝不把字符串当 HTML 拼 —— URL 里塞引号也没门。 */
+  function setUpdateState(msg, linkUrl, linkText) {
+    var el = document.getElementById('updateState');
+    if (!el) return;
+    el.textContent = '';
+    el.appendChild(document.createTextNode(String(msg == null ? '' : msg)));
+    if (linkUrl) {
+      el.appendChild(document.createTextNode(' '));
+      var a = document.createElement('a');
+      a.href = linkUrl;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = String(linkText || '打开下载页');
+      el.appendChild(a);
+    }
+  }
+
+  function syncUpdateUI() {
+    var field = document.getElementById('updateField');
+    if (field) field.hidden = !window.CourseForgeDesktop;
+  }
+
+  function onUpdateCheck() {
+    var desk = window.CourseForgeDesktop;
+    var btn = document.getElementById('btnUpdateCheck');
+    if (!desk || !desk.update || typeof desk.update.check !== 'function') {
+      setUpdateState('当前环境不支持检查更新（网页版刷新即是最新）');
+      return;
+    }
+    if (btn) btn.disabled = true;
+    setUpdateState('检查中…');
+    desk.update.check().then(function (r) {
+      r = r || {};
+      if (r.status === 'available') {
+        setUpdateState(r.message || '发现新版本', r.downloadUrl, '前往下载 v' + (r.latest || ''));
+        showToast('发现新版本 v' + (r.latest || ''));
+      } else if (r.status === 'latest') {
+        setUpdateState(r.message || '已是最新版本');
+      } else {
+        // norelease / network / badtag / badresponse / error 都有人话在 message 里
+        setUpdateState(r.message || '检查失败，稍后再试');
+      }
+    }).catch(function () {
+      setUpdateState('检查失败，稍后再试');
+    }).then(function () {
+      // 不用 .finally：保持与全文件同一套 then/catch 风格，也顺便兼容更老的 jsdom
+      if (btn) btn.disabled = false;
+    });
+  }
+
   /** UTF-8 安全的 base64（btoa 直接吃非 Latin1 会炸，先过 encodeURIComponent） */
   function b64utf8(s) {
     return window.btoa(unescape(encodeURIComponent(s)));
@@ -776,6 +830,7 @@
     syncRemindUI();
     syncEventsUI();
     syncCloudUI();
+    syncUpdateUI();
   }
 
   /** 把提醒相关的设置与权限状态刷到设置抽屉里 */
@@ -1537,6 +1592,7 @@
     'cloud-save': onCloudSave,
     'cloud-upload': onCloudUpload,
     'cloud-download': onCloudDownload,
+    'update-check': onUpdateCheck,
     'toggle-theme': toggleTheme,
     'import-json': function () { document.getElementById('importFile').click(); },
     'clear-sample': onClearSample,

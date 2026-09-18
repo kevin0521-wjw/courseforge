@@ -47,6 +47,7 @@ const FILES = {
   remind: path.join(ROOT, 'web/js/remind.js'),
   webdav: path.join(ROOT, 'web/js/webdav.js'),
   webdavClient: path.join(ROOT, 'desktop/webdav-client.js'),
+  updateChecker: path.join(ROOT, 'desktop/update-checker.js'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
 const FIXTURE = 'tests/fixtures/cjk-timetable-rotated.pdf';
@@ -1193,6 +1194,54 @@ function onlyMatch(i) {
     file: 'app',
     apply: (s) => (s.includes(anchor)
       ? s.replace(anchor, '    // MUTANT: 配置不再持久化')
+      : s)
+  });
+}
+
+// 83) 版本比较翻转：远端更旧也报「发现新版本」，诱导用户降级重装
+{
+  const anchor = '    if (cmp > 0) {';
+  mutations.push({
+    name: 'update-checker：版本比较翻转（旧版本也报有更新，诱导降级）',
+    file: 'updateChecker',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    if (cmp !== 0) { // MUTANT（比较翻转）')
+      : s)
+  });
+}
+
+// 84) html_url 白名单失效：API 响应里的任意链接直达用户
+{
+  const anchor = "    const htmlUrl = (data && typeof data.html_url === 'string'\n      && /^https:\\/\\/github\\.com\\//.test(data.html_url)) ? data.html_url : RELEASES_PAGE;";
+  mutations.push({
+    name: 'update-checker：下载链接白名单失效（被篡改的响应可把用户引去任意站点）',
+    file: 'updateChecker',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "    const htmlUrl = (data && typeof data.html_url === 'string') ? data.html_url : RELEASES_PAGE; // MUTANT（白名单拆掉）")
+      : s)
+  });
+}
+
+// 85) 404 当错误：还没发过版的应用每次点「检查更新」都弹「检查失败」
+{
+  const anchor = '    if (res.status === 404) {\n      return { ok: true, status: \'norelease\', current, message: \'还没有发布过版本，暂时无需检查\' };';
+  mutations.push({
+    name: 'update-checker：404 预期态当错误（无 release 时永远「检查失败」）',
+    file: 'updateChecker',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    if (res.status === 404) {\n      return { ok: false, status: \'error\', current, message: \'MUTANT: 404 当错误\' };')
+      : s)
+  });
+}
+
+// 86) 检查更新区不再按桥显隐：网页版也亮出「检查更新」按钮（点了必然失败）
+{
+  const anchor = '    var field = document.getElementById(\'updateField\');\n    if (field) field.hidden = !window.CourseForgeDesktop;';
+  mutations.push({
+    name: 'syncUpdateUI：网页版也显示检查更新按钮（无桥时点了只能失败）',
+    file: 'app',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    var field = document.getElementById(\'updateField\');\n    if (field) field.hidden = false; // MUTANT（不再按桥显隐）')
       : s)
   });
 }

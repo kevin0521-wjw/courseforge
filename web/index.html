@@ -200,6 +200,16 @@
           <p class="hint" id="cloudState">—</p>
           <p class="hint">手动两键：上传=用本机覆盖云端，恢复=用云端覆盖本机（恢复前会确认）。数据先过本机，再到你自己的服务器，不经过任何第三方。</p>
         </div>
+
+        <!-- 检查更新（仅桌面版显示）：只查版本 + 给官方下载页链接，不静默安装 -->
+        <div class="field" id="updateField" hidden>
+          <span class="field-label">检查更新（桌面版）</span>
+          <div class="event-form">
+            <button type="button" class="btn btn-ghost" data-action="update-check" id="btnUpdateCheck">检查更新</button>
+          </div>
+          <p class="hint" id="updateState">—</p>
+          <p class="hint">检查到新版本后给你官方下载页链接，自己决定何时升级；不自动下载安装（安装包未签名，静默升级会被系统拦截）。</p>
+        </div>
       </div>
 
       <div class="drawer-foot">

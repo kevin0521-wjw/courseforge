@@ -184,6 +184,16 @@ test('main.js：注册了全部 WebDAV 云同步通道（密码规则与教务�
     '用存储密码前必须校验用户名一致');
 });
 
+test('main.js：注册了检查更新通道（只读，github 白名单再兜一道）', () => {
+  assert.ok(/ipcMain\.handle\(\s*'update:check'/.test(MAIN_SRC));
+  assert.ok(/app\.whenReady\(\)\.then\(\(\) => \{[\s\S]*registerUpdateIpc\(\)/.test(MAIN_SRC),
+    'registerUpdateIpc() 应在 whenReady 回调里调用');
+  assert.ok(/createUpdateChecker\(/.test(MAIN_SRC), '检查更新必须走注入式 checker 模块');
+  // checker 返回的链接已过白名单；主进程还要再兜一道，绝不把别的字符串带给页面
+  assert.ok(/\^https:\\\/\\\/github\\\.com\\\//.test(MAIN_SRC),
+    '主进程侧必须有第二道 github.com 白名单');
+});
+
 test('main.js：菜单发现的地址必须是站内 /jwglxt/ 路径（防被篡改的页面带跑会话）', () => {
   // 发现逻辑来自教务页面本身，属于「外部输入」：只允许站内绝对路径，
   // 且必须拼到已登录的 origin 上，不能拿页面给的完整 URL 直接请求
@@ -229,7 +239,9 @@ test('preload.js：不把 ipcRenderer 整个暴露给页面', async () => {
     'edu:grab', 'edu:login', 'edu:open',
     // 桌面外壳：推送课表快照 + 读写小组件显隐状态
     'shell:push', 'shell:status', 'shell:widget-hide', 'shell:widget-show',
-    'shell:widget-toggle'
+    'shell:widget-toggle',
+    // 检查更新：只读一个通道，无参数无凭据
+    'update:check'
   ], '暴露的通道清单变化必须是有意为之：每多一个通道就多一个被页面调用的入口');
 });
 
@@ -246,6 +258,7 @@ test('preload-widget.js：小组件窗口的能力面比主窗口更小', async 
     '小组件是一个纯展示窗口，能力面扩大必须是有意为之');
   assert.ok(!/edu:/.test(src), '小组件不该有任何教务系统通道');
   assert.ok(!/cloud:/.test(src), '小组件也不该有任何云同步通道（凭据只留在主窗口链路里）');
+  assert.ok(!/update:/.test(src), '小组件同样不需要检查更新通道');
 
   // 订阅走 ipcRenderer.on；回调只能收数据，不能把 IpcRendererEvent 透传给页面
   // （那个对象上挂着 sender，等于把主进程引用递了出去）

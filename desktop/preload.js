@@ -87,5 +87,14 @@ contextBridge.exposeInMainWorld('CourseForgeDesktop', {
     }),
     credStatus: () => ipcRenderer.invoke('cloud:cred-status'),
     credClear: () => ipcRenderer.invoke('cloud:cred-clear')
+  },
+
+  /**
+   * 检查更新（只读，无参数、无凭据）：主进程查 GitHub Releases 比对版本，
+   * 返回 { status, current, latest, downloadUrl, message }。
+   * 不做静默下载安装 —— 链接交给页面，用户自己决定何时去下载。
+   */
+  update: {
+    check: () => ipcRenderer.invoke('update:check')
   }
 });
