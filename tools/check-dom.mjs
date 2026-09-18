@@ -4,7 +4,7 @@
  *  2. index.html 引用的本地资源文件（css/js/icon/manifest）必须真实存在
  * 捕获「getElementById 拿到 null」「部署缺文件」这类运行时才暴露的低级错误
  */
-import { readFile, access } from 'node:fs/promises';
+import { readFile, access, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -176,28 +176,47 @@ try {
 }
 
 // ---- 桌面端 IPC 通道名一致性 ----
-// preload 里 ipcRenderer.invoke('x') 与 main 里 ipcMain.handle('x') 必须一一对应。
+// preload 里 ipcRenderer.invoke('x') 与主进程里 ipcMain.handle('x') 必须一一对应。
 // 通道名写错不会报错，只会让 Promise 永远挂着（按钮点了没反应），属于最难查的一类 bug。
+//
+// ⚠️ 这里**扫描 desktop/ 下全部 .js**，而不是写死 preload.js + main.js 两个文件名。
+// 起因：把「托盘与常驻小组件」拆进 desktop-shell.js 之后，新注册的 shell:* 通道
+// 被这条检查判成「主进程没有注册」——检查本身没失效，是它的文件清单过期了。
+// 写死清单的检查会在每次拆模块时静默漏报，统一扫全目录才是这类一致性检查的正确写法。
 try {
-  const preload = await readFile(join(ROOT, 'desktop', 'preload.js'), 'utf-8');
-  const main = await readFile(join(ROOT, 'desktop', 'main.js'), 'utf-8');
+  const DESKTOP_DIR = join(ROOT, 'desktop');
+  const desktopFiles = (await readdir(DESKTOP_DIR))
+    .filter((f) => f.endsWith('.js'));
 
-  const invoked = new Set([...preload.matchAll(/ipcRenderer\.invoke\(\s*['"]([\w:-]+)['"]/g)].map((m) => m[1]));
-  const handled = new Set([...main.matchAll(/ipcMain\.handle\(\s*['"]([\w:-]+)['"]/g)].map((m) => m[1]));
+  /** 收集 [通道名, 来源文件] 并去重，报错时能直接指到是哪写的 */
+  const collect = async (sources, re) => {
+    const map = new Map();
+    for (const f of sources) {
+      const src = await readFile(join(DESKTOP_DIR, f), 'utf-8');
+      for (const m of src.matchAll(re)) {
+        if (!map.has(m[1])) map.set(m[1], f);
+      }
+    }
+    return map;
+  };
 
-  const orphanInvoke = [...invoked].filter((c) => !handled.has(c));
-  const orphanHandle = [...handled].filter((c) => !invoked.has(c));
+  const invoked = await collect(desktopFiles, /ipcRenderer\.invoke\(\s*['"]([\w:-]+)['"]/g);
+  const handled = await collect(desktopFiles, /ipcMain\.handle\(\s*['"]([\w:-]+)['"]/g);
+
+  const orphanInvoke = [...invoked.keys()].filter((c) => !handled.has(c));
+  const orphanHandle = [...handled.keys()].filter((c) => !invoked.has(c));
   if (orphanInvoke.length) {
     console.error('检查失败：preload 调用了主进程没有注册的 IPC 通道（会永远等待）：');
-    for (const c of orphanInvoke) console.error('  - ' + c);
+    for (const c of orphanInvoke) console.error('  - ' + c + '（调用点：' + invoked.get(c) + '）');
     process.exit(1);
   }
   if (orphanHandle.length) {
-    console.warn(`提示：主进程注册了但页面未使用的 IPC 通道：${orphanHandle.join('、')}`);
+    console.warn('提示：主进程注册了但页面未使用的 IPC 通道：'
+      + orphanHandle.map((c) => c + '（' + handled.get(c) + '）').join('、'));
   }
-  console.log(`IPC 通道检查通过：${invoked.size} 个通道名在 preload 与 main 之间一一对应`);
+  console.log(`IPC 通道检查通过：${invoked.size} 个通道名在两端的 ${desktopFiles.length} 个桌面端模块之间一一对应`);
 } catch (e) {
   // desktop/ 缺失不算失败（比如只分发 web/ 的场景）
-  console.log('IPC 通道检查跳过：未找到 desktop/ 目录');
+  console.log('IPC 通道检查跳过：未找到 desktop/ 目录（' + ((e && e.message) || e) + '）');
 }
 

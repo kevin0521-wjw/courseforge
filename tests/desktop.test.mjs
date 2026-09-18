@@ -207,8 +207,32 @@ test('preload.js：不把 ipcRenderer 整个暴露给页面', async () => {
   const invokes = [...preload.matchAll(/ipcRenderer\.invoke\(\s*'([\w:-]+)'/g)].map((m) => m[1]);
   assert.deepEqual(invokes.sort(), [
     'edu:close', 'edu:courses', 'edu:cred-clear', 'edu:cred-status',
-    'edu:grab', 'edu:login', 'edu:open'
+    'edu:grab', 'edu:login', 'edu:open',
+    // 桌面外壳：推送课表快照 + 读写小组件显隐状态
+    'shell:push', 'shell:status', 'shell:widget-hide', 'shell:widget-show',
+    'shell:widget-toggle'
   ], '暴露的通道清单变化必须是有意为之：每多一个通道就多一个被页面调用的入口');
+});
+
+test('preload-widget.js：小组件窗口的能力面比主窗口更小', async () => {
+  const src = await readFile(fileURLToPath(new URL('../desktop/preload-widget.js', import.meta.url)), 'utf-8');
+  assert.ok(/contextBridge\.exposeInMainWorld/.test(src));
+  assert.ok(!/exposeInMainWorld\([^)]*ipcRenderer\s*\)/.test(src),
+    '不能让小组件页面直接拿到 ipcRenderer');
+  assert.ok(!/\bipcRenderer:\s*ipcRenderer\b/.test(src));
+
+  const invokes = [...src.matchAll(/ipcRenderer\.invoke\(\s*'([\w:-]+)'/g)].map((m) => m[1]);
+  // 小组件只需要「取数据 / 隐藏自己 / 打开主窗口」三件事 —— 没有任何教务系统能力
+  assert.deepEqual(invokes.sort(), ['widget:hide', 'widget:open-main', 'widget:view'],
+    '小组件是一个纯展示窗口，能力面扩大必须是有意为之');
+  assert.ok(!/edu:/.test(src), '小组件不该有任何教务系统通道');
+
+  // 订阅走 ipcRenderer.on；回调只能收数据，不能把 IpcRendererEvent 透传给页面
+  // （那个对象上挂着 sender，等于把主进程引用递了出去）
+  const onCalls = [...src.matchAll(/ipcRenderer\.on\(\s*'([\w:-]+)'/g)].map((m) => m[1]);
+  assert.deepEqual(onCalls, ['widget:update']);
+  assert.ok(/\(event,\s*view\)\s*=>\s*cb\(view\)/.test(src) || /\(event, view\) => cb\(view\)/.test(src),
+    'onUpdate 必须只把 view 交给回调，不透传 event');
 });
 
 // ==================== 打包配置与主进程的一致性 ====================

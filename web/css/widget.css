@@ -1,0 +1,217 @@
+/*
+ * 课表小组件样式
+ *
+ * 两条约束决定了这里的写法：
+ *   1) 窗口是 transparent 的，卡片必须自己画圆角和阴影 —— 所以卡片外面留了 8px 透明边距，
+ *      否则阴影会被窗口边缘裁掉，看着像一块硬邦邦的色块。
+ *   2) 拖动手柄靠 -webkit-app-region: drag，但按钮必须在 no-drag 区域里，
+ *      否则按钮按下会被解释成「开始拖动窗口」，点了没反应。
+ */
+
+:root {
+  --card-bg: rgba(255, 255, 255, 0.96);
+  --card-border: rgba(15, 23, 42, 0.08);
+  --text: #1b1f2a;
+  --muted: #6b7280;
+  --faint: #9aa3b2;
+  --accent: #3b82f6;
+  --track: rgba(15, 23, 42, 0.08);
+  --shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --card-bg: rgba(26, 29, 36, 0.96);
+    --card-border: rgba(255, 255, 255, 0.09);
+    --text: #eef1f7;
+    --muted: #a7b0c0;
+    --faint: #7c8698;
+    --accent: #60a5fa;
+    --track: rgba(255, 255, 255, 0.12);
+    --shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  /* 挂件不是文档，选中/拖选文字在这里毫无意义，还会误触发拖动 */
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+  font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC',
+               'Hiragino Sans GB', 'Noto Sans CJK SC', 'Source Han Sans SC',
+               system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.card {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  flex-direction: column;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  color: var(--text);
+}
+
+/* ---------- 顶部：拖动条 ---------- */
+
+.bar {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px 0 12px;
+  /* 整条可拖动；按钮再单独声明 no-drag 抢回来 */
+  -webkit-app-region: drag;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: 0 0 auto;
+}
+
+.term {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spacer { flex: 1 1 auto; }
+
+.icon-btn {
+  -webkit-app-region: no-drag;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.icon-btn:hover { background: var(--track); color: var(--text); }
+.icon-btn:active { transform: scale(0.92); }
+
+/* ---------- 主体 ---------- */
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 2px 14px 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+
+.clock-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.clock {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.headline {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.name {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.2px;
+  /* 长课名（如「数据结构与算法分析」）折到两行，而不是切成「数据结…」 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.meta {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 进度条只在「正在上课」时才有意义，其余状态占位会让人以为漏了东西 */
+.track {
+  display: none;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 2px;
+  background: var(--track);
+  overflow: hidden;
+}
+
+.card[data-phase="current"] .track { display: block; }
+
+.fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.4s linear;
+}
+
+/* ---------- 底部 ---------- */
+
+.foot {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+/* ---------- 按状态换强调色 ---------- */
+
+.card[data-phase="off"]       { --accent: #f59e0b; }
+.card[data-phase="beforeterm"]{ --accent: #8b5cf6; }
+.card[data-phase="beforeterm"] .clock { font-size: 15px; }
+.card[data-phase="afterterm"] { --accent: #94a3b8; }
+.card[data-phase="none"]      { --accent: #94a3b8; }
+.card[data-phase="nodata"]    { --accent: #94a3b8; }
+.card[data-phase="missing"]   { --accent: #ef4444; }
+.card[data-phase="nodata"] .name,
+.card[data-phase="none"] .name,
+.card[data-phase="afterterm"] .name { font-size: 16px; font-weight: 600; }

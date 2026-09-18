@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!--
+  课表小组件（桌面端专用页面）
+
+  与 index.html 的关系：这个是「贴在桌面角落的一张信息卡」，不是缩小的课表。
+  所以它不引用 core.js / remind.js，也不读 localStorage ——
+  所有判定已在主进程用同一份 remind.js 算好，这里只负责画。
+  好处是这张卡永远不会和主窗口说不一样的话。
+-->
+<title>课表小组件</title>
+<link rel="stylesheet" href="css/widget.css">
+</head>
+<body>
+  <div class="card" id="card" data-phase="loading">
+    <header class="bar">
+      <!-- 这一条是拖动区：-webkit-app-region: drag 让整条都能拖窗口 -->
+      <span class="dot" aria-hidden="true"></span>
+      <span class="term" id="wTerm">课表工坊</span>
+      <span class="spacer"></span>
+      <button class="icon-btn" id="btnOpen" type="button" title="打开完整课表">⤢</button>
+      <button class="icon-btn" id="btnRefresh" type="button" title="立即刷新">⟳</button>
+      <button class="icon-btn" id="btnClose" type="button" title="隐藏（点托盘图标可唤回）">✕</button>
+    </header>
+
+    <main class="body">
+      <div class="clock-row">
+        <span class="clock" id="wClock">--:--</span>
+        <span class="headline" id="wHeadline">正在读取课表…</span>
+      </div>
+      <div class="name" id="wName"></div>
+      <div class="meta" id="wMeta"></div>
+      <div class="track" id="wTrack"><i class="fill" id="wFill"></i></div>
+    </main>
+
+    <footer class="foot">
+      <span id="wToday"></span>
+      <span id="wDate"></span>
+    </footer>
+  </div>
+
+  <script src="js/widget.js"></script>
+</body>
+</html>

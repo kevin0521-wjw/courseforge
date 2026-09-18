@@ -10,6 +10,8 @@ const { app, BrowserWindow, Menu, shell, ipcMain, safeStorage } = require('elect
 const path = require('path');
 const EduLogin = require('./edu-login.js');
 const { createCredStore } = require('./cred-store.js');
+const { createWidgetStore } = require('./widget-store.js');
+const { createShell } = require('./desktop-shell.js');
 
 // ==================== 安全模式（受限环境启动）====================
 /**
@@ -63,6 +65,15 @@ const WEB_DIR = app.isPackaged
   : path.join(__dirname, '..', 'web');
 
 function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    // 已存在就前置，别开出第二个主窗口 —— 两份界面各自持有一份 state，
+    // 编辑课表时会出现「改了这边那边还是旧的」
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 820,
@@ -90,6 +101,47 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  return mainWindow;
+}
+
+// ==================== 托盘与常驻小组件 ====================
+
+let widgetStore = null;
+let deskShell = null;
+
+/**
+ * 托盘图标的候选路径，按优先级排。
+ * 优先用 .ico：它内含 16/24/32 多档尺寸，Windows 在不同 DPI 缩放下会挑最合适的一档，
+ * 直接拿 192×192 的 PNG 缩到 16px 会糊。PNG 只作兜底。
+ */
+function trayIconCandidates() {
+  return [
+    // 打包后：electron-builder 把 build/icon.ico 复制到 resources/tray.ico
+    app.isPackaged ? path.join(process.resourcesPath, 'tray.ico') : '',
+    // 开发态：直接用构建目录里的 .ico
+    path.join(__dirname, 'build', 'icon.ico'),
+    // 最后兜底：PWA 那套图标里最小的那张
+    path.join(WEB_DIR, 'icon-192.png')
+  ].filter(Boolean);
+}
+
+function initDesktopShell() {
+  widgetStore = createWidgetStore({
+    webJsDir: path.join(WEB_DIR, 'js'),
+    log: (m) => console.log('[CourseForge] ' + m)
+  });
+
+  deskShell = createShell({
+    webDir: WEB_DIR,
+    store: widgetStore,
+    iconCandidates: trayIconCandidates(),
+    prefsFile: path.join(app.getPath('userData'), 'desktop-prefs.json'),
+    openMain: () => createWindow(),
+    log: (m) => console.log('[CourseForge] ' + m)
+  });
+
+  deskShell.start();
 }
 
 // ==================== 教务系统直连 ====================
@@ -595,6 +647,7 @@ app.whenReady().then(() => {
   registerEduIpc();
   registerAutoLoginIpc();
   buildMenu();
+  initDesktopShell();
   createWindow();
 
   app.on('activate', () => {
@@ -603,7 +656,20 @@ app.whenReady().then(() => {
   });
 });
 
+app.on('before-quit', () => {
+  // 必须先置退标志：小组件窗口拦了 close 事件（关掉只隐藏），
+  // 不置标志的话「点退出」会变成「窗口关不掉、进程也不退」
+  if (deskShell) deskShell.beginQuit();
+});
+
+app.on('will-quit', () => {
+  if (deskShell) deskShell.stop();
+});
+
 app.on('window-all-closed', () => {
-  // Windows/Linux：关闭全部窗口即退出
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform === 'darwin') return;
+  // 有托盘常驻时不退出：用户顺手关掉主窗口后，托盘点一下就能唤回，
+  // 「桌面常驻」才成立。要退出就去托盘菜单点退出。
+  if (deskShell && !deskShell.shouldQuitOnAllClosed()) return;
+  app.quit();
 });

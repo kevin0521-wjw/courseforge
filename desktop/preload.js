@@ -43,5 +43,21 @@ contextBridge.exposeInMainWorld('CourseForgeDesktop', {
     courses: () => ipcRenderer.invoke('edu:courses'),
     credStatus: () => ipcRenderer.invoke('edu:cred-status'),
     credClear: () => ipcRenderer.invoke('edu:cred-clear')
+  },
+
+  /**
+   * 桌面外壳：托盘 + 常驻小组件
+   *
+   * push(workspace) 是这里唯一「把数据送出主进程」的接口，值得说清楚为什么安全：
+   * 传出去的是**课表数据本身**，不包含任何凭据；主进程拿到后只用来算「下节课」，
+   * 不落盘、不外发。之所以要送，是因为托盘提示与小组件都要在主窗口关闭后仍能工作，
+   * 而它们不能去读渲染进程的 localStorage。
+   */
+  shell: {
+    push: (workspace) => ipcRenderer.invoke('shell:push', workspace),
+    status: () => ipcRenderer.invoke('shell:status'),
+    showWidget: () => ipcRenderer.invoke('shell:widget-show'),
+    hideWidget: () => ipcRenderer.invoke('shell:widget-hide'),
+    toggleWidget: () => ipcRenderer.invoke('shell:widget-toggle')
   }
 });

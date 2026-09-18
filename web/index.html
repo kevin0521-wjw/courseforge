@@ -152,6 +152,16 @@
           <button type="button" class="btn btn-ghost" data-action="request-notify">允许浏览器通知</button>
           <p class="hint">网页版要页面开着才会提醒；桌面版由系统直接弹通知。放假与调休在「今天」面板上点一下就能标记。</p>
         </div>
+
+        <!-- 仅桌面版显示：网页版没有桌面外壳这座桥，由 app.js 判空后保持 hidden -->
+        <div class="field" id="desktopWidgetField" hidden>
+          <span class="field-label">桌面常驻小组件</span>
+          <label class="field-check">
+            <input type="checkbox" id="settingsDesktopWidget" name="settingsDesktopWidget">
+            <span>在桌面角落放一块课表挂件（显示下节课、地点与倒计时）</span>
+          </label>
+          <p class="hint">关掉主窗口后它依然在，点系统托盘图标可以随时显示或隐藏。这个开关即时生效，不跟随「保存设置」。</p>
+        </div>
       </div>
 
       <div class="drawer-foot">

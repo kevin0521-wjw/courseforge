@@ -15,6 +15,11 @@
   var SI = window.CourseForgeShare;
   var RM = window.CourseForgeRemind;
 
+  // 桌面端「常驻小组件」开关的重新同步函数；网页版恒为 null。
+  // 开关状态的真身在主进程（托盘菜单也能改），所以每次打开设置抽屉都要重读一次，
+  // 否则用户从托盘改了显隐、再打开设置会看到过期的勾选状态。
+  var desktopWidgetResync = null;
+
   if (!CF || !CR || !ST) {
     // 依赖缺失属于致命错误，直接提示而不是白屏
     document.addEventListener('DOMContentLoaded', function () {
@@ -88,6 +93,37 @@
       cur.settings = state.settings;
     }
     ST.save({ version: 2, activeId: state.activeId, semesters: state.semesters });
+    pushToDesktop();
+  }
+
+  /**
+   * 把课表快照推给桌面端主进程（托盘提示与常驻小组件都靠它）。
+   *
+   * 挂在 persist() 里是因为那是所有数据变更的唯一收口 ——
+   * 改课、切学期、改设置、导入，最后都会走到这里，不会漏。
+   * 网页版没有这座桥，直接跳过；推送失败也绝不能影响主流程（课表存不存得下
+   * 跟托盘显示无关），所以整段包了 try，异步失败只 warn。
+   */
+  function pushToDesktop() {
+    var d = window.CourseForgeDesktop;
+    if (!d || !d.shell || typeof d.shell.push !== 'function') return;
+    var res = null;
+    try {
+      res = d.shell.push({
+        version: 2,
+        activeId: state.activeId,
+        semesters: state.semesters
+      });
+    } catch (e) {
+      return; // 桥不可用：当作网页版处理
+    }
+    if (res && typeof res.then === 'function') {
+      res.then(function (r) {
+        if (!r || r.ok !== true) {
+          console.warn('[CourseForge] 桌面外壳没接受课表快照，托盘可能显示旧数据');
+        }
+      }, function () { /* 主进程还没就绪，下次 persist 会再推一次 */ });
+    }
   }
 
   /**
@@ -1046,7 +1082,11 @@
       var form = document.getElementById('courseForm');
       if (form) form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event('submit', { cancelable: true }));
     },
-    'open-settings': function () { syncSettingsUI(); document.getElementById('settingsPanel').hidden = false; },
+    'open-settings': function () {
+      syncSettingsUI();
+      if (desktopWidgetResync) desktopWidgetResync();
+      document.getElementById('settingsPanel').hidden = false;
+    },
     'close-settings': function () { document.getElementById('settingsPanel').hidden = true; },
     'save-settings': onSettingsSave,
     'export-json': exportJSON,
@@ -1192,6 +1232,52 @@
     return ws;
   }
 
+  /**
+   * 「桌面常驻小组件」开关（仅桌面端显示）。
+   *
+   * 两个刻意的设计：
+   *   1) 它不进 settings、不跟随「保存设置」—— 控制的是窗口显隐，必须立刻生效。
+   *      等用户再点一次保存才动，会让人以为点了没反应。
+   *   2) 状态真身在主进程（托盘菜单也能改），所以打开抽屉时重读一次。
+   *      并且调用失败要把勾选**改回去** —— 界面显示「已开启」而窗口根本没出来，
+   *      是比功能坏掉更糟的一种状态：用户会一直等一个不会出现的东西。
+   */
+  function mountDesktopWidgetSetting() {
+    var d = window.CourseForgeDesktop;
+    var field = document.getElementById('desktopWidgetField');
+    var box = document.getElementById('settingsDesktopWidget');
+    if (!d || !d.shell || !field || !box) return;
+    if (typeof d.shell.status !== 'function') return;
+
+    field.hidden = false;
+
+    desktopWidgetResync = function () {
+      var r = d.shell.status();
+      if (!r || typeof r.then !== 'function') return;
+      r.then(function (st) {
+        if (st && typeof st.widgetVisible === 'boolean') box.checked = st.widgetVisible;
+      }, function () { /* 读不到就维持现状，不猜 */ });
+    };
+
+    box.addEventListener('change', function () {
+      var want = box.checked;
+      var call = want ? d.shell.showWidget : d.shell.hideWidget;
+      var r = call();
+      if (!r || typeof r.then !== 'function') return;
+      r.then(function (ok) {
+        if (ok !== true) {
+          box.checked = !want;
+          showToast(want ? '小组件没能打开，可能被系统拦下了' : '小组件没能关闭');
+        }
+      }, function () {
+        box.checked = !want;
+        showToast('桌面外壳没有响应，小组件未改变');
+      });
+    });
+
+    desktopWidgetResync();
+  }
+
   function init() {
     // 兼容 v1 旧数据：normalizeWorkspace 内部完成迁移；只有「完全无数据」才播种示例
     var ws = CF.normalizeWorkspace(ST.load());
@@ -1217,6 +1303,8 @@
     // 桌面端环境标识
     var chip = document.getElementById('syncChip');
     if (chip && window.CourseForgeDesktop) chip.textContent = '桌面版 · 本地保存';
+    // 桌面端专属设置项（常驻小组件）：网页版没有这段桥，整块保持隐藏
+    mountDesktopWidgetSetting();
     // 新建学期弹窗的默认值
     syncSemesterModalDefaults();
     // 今日课程实时刷新（每分钟一次，页面不可见时暂停重绘但保留提醒）

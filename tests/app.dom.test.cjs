@@ -964,3 +964,172 @@ D('分享图弹窗：切换范围/配色会同步选中态，关闭后收起', (
     assert.equal(doc.getElementById('shareModal').hidden, true, '关闭按钮没把弹窗收起来');
   });
 });
+
+// ==================== 桌面端「常驻小组件」接线 ====================
+//
+// 这几条验的是**接线**，不是视觉：
+//   1. 网页版绝不能显示这个开关（那里没有桌面外壳，点了必然无反应）
+//   2. 桌面端的勾选状态真身在主进程（托盘菜单也能改），打开抽屉时必须重读
+//   3. 调用失败要把勾选改回去 —— 界面显示「已开启」而窗口没出来，
+//      是比功能坏掉更糟的状态：用户会一直等一个不会出现的东西
+//   4. 课表一改就要把快照推给主进程，否则托盘会长期显示旧数据
+
+/**
+ * 造一个假的桌面外壳桥。
+ * 返回值挂在 window 上（测试里可以直接查调用记录），同时也 return 出来方便链式使用。
+ * @param {object} [opts] { visible, pushResult(), showResult() }
+ */
+function desktopBridge(w, opts) {
+  const o = opts || {};
+  const calls = { push: [], status: 0, show: 0, hide: 0 };
+  const state = { visible: !!o.visible };
+  const shell = {
+    push: (ws) => {
+      calls.push.push(ws);
+      return o.pushResult ? o.pushResult() : Promise.resolve({ ok: true });
+    },
+    status: () => {
+      calls.status++;
+      return Promise.resolve({ tray: true, widgetVisible: state.visible, alwaysOnTop: true, bounds: null });
+    },
+    showWidget: () => {
+      calls.show++;
+      return o.showResult ? o.showResult() : Promise.resolve(true);
+    },
+    hideWidget: () => {
+      calls.hide++;
+      return Promise.resolve(true);
+    },
+    toggleWidget: () => Promise.resolve(true)
+  };
+  w.CourseForgeDesktop = { isDesktop: true, platform: 'win32', shell: shell };
+  const handle = { calls, state, setVisible: (v) => { state.visible = v; } };
+  w.__shell = handle;
+  return handle;
+}
+
+/** 勾选框走一次 change 事件（app.js 里就是监听 change）；flush 复用文件上部已有的那个 */
+function toggleBox(w, checked) {
+  const box = w.document.getElementById('settingsDesktopWidget');
+  box.checked = checked;
+  box.dispatchEvent(new w.Event('change', { bubbles: true }));
+  return box;
+}
+
+D('网页版：设置里不出现「常驻小组件」开关（没有桌面外壳，点了必然无反应）', () => {
+  return bootDom().then((w) => {
+    const field = w.document.getElementById('desktopWidgetField');
+    assert.ok(field, 'index.html 里应当有这块设置（靠 hidden 控制显隐）');
+    assert.equal(field.hidden, true, '无桌面桥时这块必须保持隐藏');
+  });
+});
+
+D('桌面端：显示「常驻小组件」开关，且勾选状态取自主进程', () => {
+  return bootDom((w) => desktopBridge(w, { visible: true })).then(async (w) => {
+    const doc = w.document;
+    assert.equal(doc.getElementById('desktopWidgetField').hidden, false, '桌面端应当显示这块设置');
+    assert.ok(w.__shell.calls.status >= 1, '必须真的问过主进程，而不是猜一个默认值');
+    await flush();
+    assert.equal(doc.getElementById('settingsDesktopWidget').checked, true,
+      '主进程说窗口开着，勾选就该是选中态');
+  });
+});
+
+D('桌面端：打开设置抽屉时会重读状态（托盘菜单也能改显隐）', () => {
+  return bootDom((w) => desktopBridge(w, { visible: false })).then(async (w) => {
+    const doc = w.document;
+    const box = doc.getElementById('settingsDesktopWidget');
+    await flush();
+    assert.equal(box.checked, false);
+
+    // 模拟用户从托盘菜单把小组件打开了
+    w.__shell.setVisible(true);
+    doc.querySelector('[data-action="open-settings"]').click();
+    await flush();
+    assert.equal(box.checked, true,
+      '抽屉打开时没重读状态：用户看到的是过期勾选，会以为自己的操作没生效');
+  });
+});
+
+D('桌面端：勾选立即生效（不等「保存设置」），且调的是 showWidget', () => {
+  return bootDom((w) => desktopBridge(w)).then(async (w) => {
+    await flush();
+    const box = toggleBox(w, true);
+    await flush();
+    assert.equal(w.__shell.calls.show, 1, '勾上应当调用 showWidget');
+    assert.equal(w.__shell.calls.hide, 0);
+    assert.equal(box.checked, true, '调用成功后应保持勾选');
+
+    // 取消勾选走另一条分支
+    toggleBox(w, false);
+    await flush();
+    assert.equal(w.__shell.calls.hide, 1, '取消勾选应当调用 hideWidget');
+  });
+});
+
+D('桌面端：打开小组件失败时勾选要回滚（不能让界面骗人）', () => {
+  return bootDom((w) => desktopBridge(w, { showResult: () => Promise.resolve(false) }))
+    .then(async (w) => {
+      await flush();
+      const box = toggleBox(w, true);
+      await flush();
+      assert.equal(box.checked, false,
+        '主进程明确回报失败，勾选必须退回去 —— 否则用户会一直等一个不会出现的窗口');
+    });
+});
+
+D('桌面端：主进程没应答（Promise reject）同样要回滚', () => {
+  return bootDom((w) => desktopBridge(w, { showResult: () => Promise.reject(new Error('没响应')) }))
+    .then(async (w) => {
+      await flush();
+      const box = toggleBox(w, true);
+      await flush();
+      assert.equal(box.checked, false, '异常路径也必须把勾选改回去');
+    });
+});
+
+D('桌面端：启动即推一次快照，改课表后再推一次（托盘才不会显示旧数据）', () => {
+  return bootDom((w) => desktopBridge(w)).then(async (w) => {
+    const calls = w.__shell.calls;
+    assert.ok(calls.push.length >= 1, '启动后 persist() 就该把课表推给主进程');
+    const first = calls.push[0];
+    assert.equal(first.version, 2);
+    assert.ok(Array.isArray(first.semesters) && first.semesters.length >= 1,
+      '推送的必须是完整工作区（含 semesters），否则主进程算不出下节课');
+    assert.ok(Array.isArray(first.semesters[0].courses));
+
+    const before = calls.push.length;
+
+    // 通过空白格子加一门课（这条路径最后会走到 persist）
+    // ⚠️ 挑格子要挑真空白：示例课表里 day1/section1 已有课，
+    //    点到课程卡不会开弹窗，表单提交必然校验失败，测试会红得莫名其妙
+    const doc = w.document;
+    doc.querySelector('.cf-cell[data-day="2"][data-section="1"]').click();
+    doc.getElementById('courseName').value = '快照推送测试课';
+    doc.getElementById('courseForm').querySelector('button[type="submit"]').click();
+    await flush();
+
+    assert.ok(calls.push.length > before, '改完课表应当再推一次快照');
+    const last = calls.push[calls.push.length - 1];
+    const names = last.semesters[0].courses.map((c) => c.name);
+    assert.ok(names.indexOf('快照推送测试课') !== -1,
+      '刚加的课必须出现在快照里：' + names.join('/'));
+  });
+});
+
+D('桌面端：桥的 push 抛异常也不能影响课表保存（托盘是锦上添花）', () => {
+  return bootDom((w) => desktopBridge(w, {
+    pushResult: () => { throw new Error('桥坏了'); }
+  })).then(async (w) => {
+    const doc = w.document;
+    doc.querySelector('.cf-cell[data-day="2"][data-section="1"]').click();
+    doc.getElementById('courseName').value = '桥坏了也要能存';
+    doc.getElementById('courseForm').querySelector('button[type="submit"]').click();
+    await flush();
+    // 关键断言：课表本身照常落盘，没被桌面外壳拖累
+    const saved = JSON.parse(w.localStorage.getItem(w.CourseStorage.KEY));
+    const names = saved.semesters[0].courses.map((c) => c.name);
+    assert.ok(names.indexOf('桥坏了也要能存') !== -1,
+      '桌面外壳出问题不该让课表存不下：' + names.join('/'));
+  });
+});

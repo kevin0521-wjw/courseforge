@@ -53,7 +53,18 @@ const PACKAGED = process.env.PACKAGED_APP
 const ELECTRON = PACKAGED
   || process.env.ELECTRON_PATH
   || path.join(DESKTOP, 'node_modules', 'electron', 'dist', 'electron.exe');
-const CDP_PORT = 9333 + (process.pid % 200);
+const CDP_PORT = 9333 + (process.pid % 200);   // 避免并发时抢端口
+
+/**
+ * 把 Git Bash 风格的路径（/c/Users/…）换回 Windows 路径。
+ * 坑：`/c/...` 从 MSYS 透传给 Node 之后**不会**再被转换，
+ * 于是落盘的地方变成 `C:\c\Users\...`（一个莫名其妙的目录），
+ * 而脚本还会欢快地报「已落盘」。所以在入口处就修正掉。
+ */
+function normalizeOutDir(p) {
+  const m = /^\/([a-zA-Z])\//.exec(p);
+  return m ? m[1].toUpperCase() + ':' + p.slice(2).replace(/\//g, '\\') : p;
+}
 
 if (!fs.existsSync(ELECTRON)) {
   console.error('找不到 Electron：' + ELECTRON);
@@ -77,6 +88,13 @@ const PROBE = `(async () => {
     out.hasLoginApi = !!(d.edu && typeof d.edu.login === 'function'
       && typeof d.edu.courses === 'function'
       && typeof d.edu.credStatus === 'function' && typeof d.edu.credClear === 'function');
+
+    // 托盘 / 常驻小组件那一套
+    out.hasShellApi = !!(d.shell && typeof d.shell.push === 'function'
+      && typeof d.shell.status === 'function'
+      && typeof d.shell.showWidget === 'function'
+      && typeof d.shell.hideWidget === 'function'
+      && typeof d.shell.toggleWidget === 'function');
 
     // IPC 往返：还没有教务窗口时，grab 必须返回结构化结果而不是抛异常
     try { out.grabNoWindow = await d.edu.grab(); }
@@ -305,6 +323,302 @@ try {
 
   console.log('\n=== 5. 数据持久化 ===');
   check('localStorage 可读写', info.localStorage === true);
+
+  // ==================== 6~8：托盘与常驻小组件 ====================
+  //
+  // 夹具不写死在某个日期，而是**按运行时刻现算**：
+  // 写死日期的话，下午跑能过、晚上跑就变成「接下来 14 天没有课」，徒增假红。
+  // 两套夹具各自锁定一种状态：
+  //   A「永远正在上课」—— 用 00:00~23:59 的单节作息，任何时刻跑都落在课内
+  //   B「即将上课」—— 开课时间设在 30 分钟后，验倒计时与跨天称呼
+  const pad2 = (n) => (n < 10 ? '0' + n : String(n));
+  const hhmmOf = (d) => pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  const ymd = (d) => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+
+  const nowT = new Date();
+  const todayDow = nowT.getDay();                 // 0=周日
+  const weekdayOfToday = todayDow === 0 ? 7 : todayDow;
+  const monday = new Date(nowT.getFullYear(), nowT.getMonth(), nowT.getDate());
+  monday.setDate(monday.getDate() - (weekdayOfToday - 1));
+  const semesterStart = ymd(monday);
+
+  const wsA = {
+    activeId: 'sel-a',
+    semesters: [{
+      id: 'sel-a', name: '自检学期',
+      settings: {
+        semesterStart: semesterStart, totalWeeks: 20, days: {},
+        sectionTimes: [{ label: '1', start: '00:00', end: '23:59' }]
+      },
+      courses: [{ id: 'cA', name: '恒时测试课', day: weekdayOfToday, startSection: 1, endSection: 1,
+        weeks: [1], location: '自检楼 101', teacher: '测试' }]
+    }]
+  };
+
+  // 夹具 B：30 分钟后开课。若 +90 分钟会跨过午夜，就改成明天早上 08:00 的固定窗口 ——
+  // 两条分支都仍然确定（一个断言「今天 还有 N 分钟」，一个断言「明天 … 上课」），
+  // 不搞「条件不满足就跳过」那种等于没测的写法。
+  const startAt = new Date(nowT.getTime() + 30 * 60000);
+  const endAt = new Date(nowT.getTime() + 90 * 60000);
+  const crossesMidnight = endAt.getDate() !== nowT.getDate();
+  const dayB = crossesMidnight
+    ? (weekdayOfToday === 7 ? 1 : weekdayOfToday + 1)
+    : weekdayOfToday;
+  const sectionsB = crossesMidnight
+    ? [{ label: '1', start: '08:00', end: '09:40' }]
+    : [{ label: '1', start: hhmmOf(startAt), end: hhmmOf(endAt) }];
+  const expectDaysAhead = crossesMidnight ? 1 : 0;
+
+  const wsB = {
+    activeId: 'sel-b',
+    semesters: [{
+      id: 'sel-b', name: '自检学期',
+      settings: {
+        semesterStart: semesterStart, totalWeeks: 20, days: {},
+        sectionTimes: sectionsB
+      },
+      courses: [{ id: 'cB', name: '待上测试课', day: dayB, startSection: 1, endSection: 1,
+        weeks: [1], location: '自检楼 202' }]
+    }]
+  };
+
+  const evalMain = (expression) => cdp.send('Runtime.evaluate', {
+    expression, awaitPromise: true, returnByValue: true, timeoutMs: 8000
+  }).then((r) => {
+    if (r.exceptionDetails) throw new Error('页面内抛异常：' + (r.exceptionDetails.text || ''));
+    return r.result ? r.result.value : undefined;
+  });
+
+  async function waitForWidgetTarget(deadlineMs) {
+    const deadline = Date.now() + deadlineMs;
+    while (Date.now() < deadline) {
+      try {
+        const list = await (await fetch(`http://127.0.0.1:${CDP_PORT}/json/list`)).json();
+        const t = list.find((x) => x.type === 'page' && /widget\.html/.test(x.url || ''));
+        if (t && t.webSocketDebuggerUrl) return t;
+      } catch { /* 端口忙 */ }
+      await sleep(200);
+    }
+    return null;
+  }
+
+  console.log('\n=== 6. 桌面外壳接口（preload → 主进程）===');
+  check('暴露了 shell.{push,status,showWidget,hideWidget,toggleWidget}', info.hasShellApi === true);
+
+  const st0 = await evalMain('window.CourseForgeDesktop.shell.status()');
+  check('shell.status() 可达（IPC 往返通）', !!st0 && typeof st0.tray === 'boolean',
+    st0 ? JSON.stringify(st0) : '未返回');
+  // 托盘起不来不该让整个应用起不来，但也必须能被发现 —— 所以这里断言「真的建起来了」，
+  // 失败时把原因（找不到图标 / Tray 构造抛异常）一并打出来，否则没法定位
+  check('托盘已创建', !!st0 && st0.tray === true,
+    st0 && st0.trayReason ? '原因：' + st0.trayReason : '');
+  check('小组件初始为隐藏', !!st0 && st0.widgetVisible === false);
+
+  const pushA = await evalMain('window.CourseForgeDesktop.shell.push(' + JSON.stringify(wsA) + ')');
+  check('shell.push() 课表快照被主进程接受', !!pushA && pushA.ok === true, JSON.stringify(pushA));
+
+  console.log('\n=== 7. 小组件窗口（真实开窗 + 真实渲染）===');
+  const shown = await evalMain('window.CourseForgeDesktop.shell.showWidget()');
+  check('shell.showWidget() 返回成功', shown === true);
+
+  const wTarget = await waitForWidgetTarget(8000);
+  check('widget.html 页面目标出现（窗口真的开了）', !!wTarget,
+    wTarget ? wTarget.url.replace(/^file:\/\/\//, '') : '等不到目标');
+
+  if (wTarget) {
+    const wcdp = connect(wTarget.webSocketDebuggerUrl);
+    await wcdp.ready;
+    await wcdp.send('Runtime.enable');
+
+    // 等页面就绪并完成第一次数据拉取（渲染是异步的，而本环境窗口期很短）
+    const wDeadline = Date.now() + 8000;
+    let wReady = false;
+    while (Date.now() < wDeadline) {
+      const probe = await wcdp.send('Runtime.evaluate', {
+        expression: 'JSON.stringify({rs:document.readyState,phase:(document.getElementById("card")||{}).dataset})',
+        returnByValue: true, timeoutMs: 3000
+      }).catch(() => null);
+      const v = probe && probe.result && probe.result.value;
+      if (v && v.indexOf('"complete"') !== -1 && v.indexOf('loading') === -1) { wReady = true; break; }
+      await sleep(150);
+    }
+    check('小组件页面渲染就绪', wReady);
+
+    const WPROBE = `(async () => {
+      const g = (id) => { const e = document.getElementById(id); return e ? (e.textContent || '') : null; };
+      const card = document.getElementById('card');
+      const w = window.CourseForgeWidget;
+      const out = {
+        url: location.href,
+        hasBridge: !!w,
+        api: w ? Object.keys(w).sort() : [],
+        phase: card ? card.getAttribute('data-phase') : null,
+        name: g('wName'), headline: g('wHeadline'), clock: g('wClock'),
+        meta: g('wMeta'), term: g('wTerm'), today: g('wToday'), date: g('wDate'),
+        // 安全边界：小组件页面绝不该拿到这些
+        leak: {
+          require: typeof require !== 'undefined',
+          process: typeof process !== 'undefined',
+          ipcRenderer: typeof ipcRenderer !== 'undefined'
+        },
+        viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio }
+      };
+      return JSON.stringify(out);
+    })()`;
+    const wr = await wcdp.send('Runtime.evaluate', {
+      expression: WPROBE, awaitPromise: true, returnByValue: true, timeoutMs: 8000
+    });
+    const wi = JSON.parse(wr.result.value);
+
+    check('widget preload 注入（CourseForgeWidget 存在）', wi.hasBridge === true);
+    check('小组件接口只有约定的 4 个方法',
+      wi.api.join(',') === 'getView,hide,onUpdate,openMain', wi.api.join(','));
+    check('小组件页面拿不到 require / process / ipcRenderer',
+      wi.leak.require === false && wi.leak.process === false && wi.leak.ipcRenderer === false,
+      JSON.stringify(wi.leak));
+
+    // 夹具 A 是「永远正在上课」，所以 phase / 课名 / 倒计时都该是确定值
+    check('状态正确（夹具 A：正在上课）', wi.phase === 'current', 'data-phase=' + wi.phase);
+    check('课名渲染正确', wi.name === '恒时测试课', JSON.stringify(wi.name));
+    check('顶部含周次与星期', /第 1 周/.test(wi.term || '') && /周[一二三四五六日]/.test(wi.term || ''), wi.term);
+    check('大时钟为 HH:MM 格式', /^\d{2}:\d{2}$/.test(wi.clock || ''), wi.clock);
+    check('次行含时间 / 节次 / 地点', /00:00 ~ 23:59/.test(wi.meta || '') && /自检楼 101/.test(wi.meta || ''), wi.meta);
+    // 「正在上课」时进度条才有意义：「今天最后一节」是这一夹具的正确文案
+    check('底部显示今日剩余节次', /今天最后一节/.test(wi.today || ''), wi.today);
+
+    // ---------- 像素级检查：结构对 ≠ 图看着对（分享图那轮踩过的教训）----------
+    // 做法：CDP 截真实窗口 → 把 base64 丢回页面用 canvas 解回来数像素。
+    // 这样不需要在 Node 侧手写 PNG 解码，也不放过 alpha 通道。
+    const shot = await wcdp.send('Page.captureScreenshot',
+      { format: 'png', fromSurface: false }, 15000).catch(() => null);
+    const b64 = shot && shot.data;
+    check('能截到小组件真实窗口', !!b64 && b64.length > 1000,
+      b64 ? ('base64 ' + b64.length + ' 字符') : '截图失败');
+
+    // 需要样张时落盘：文档里那张预览图必须是**功能自己产出的**，
+    // 不是另画的示意图 —— 否则图会慢慢和真实界面脱节而没人发现。
+    if (b64 && process.env.WIDGET_OUT) {
+      const outPath = normalizeOutDir(process.env.WIDGET_OUT);
+      try {
+        fs.mkdirSync(outPath, { recursive: true });
+        const file = path.join(outPath, 'widget-' + new Date().toISOString().slice(0, 10) + '.png');
+        fs.writeFileSync(file, Buffer.from(b64, 'base64'));
+        console.log('  📸 已落盘样张：' + file);
+      } catch (e) {
+        console.log('  ⚠️ 样张落盘失败：' + ((e && e.message) || e));
+      }
+    }
+
+    if (b64) {
+      const PIX = `(async () => {
+        const img = new Image();
+        img.src = 'data:image/png;base64,${b64}';
+        await img.decode();
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const d = ctx.getImageData(0, 0, c.width, c.height).data;
+        const total = d.length / 4;
+        let opaque = 0, dark = 0, light = 0;
+        const seen = {};
+        let kinds = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const a = d[i + 3];
+          if (a > 200) {
+            opaque++;
+            const lum = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+            if (lum < 110) dark++; else light++;
+          }
+          if (i % 400 === 0) {
+            const k = d[i] + ',' + d[i + 1] + ',' + d[i + 2];
+            if (!seen[k]) { seen[k] = 1; kinds++; }
+          }
+        }
+        return JSON.stringify({
+          w: c.width, h: c.height, px: total,
+          opaqueRatio: opaque / total,
+          inkRatio: dark / total,
+          dark, light, kinds
+        });
+      })()`;
+      const pixRes = await wcdp.send('Runtime.evaluate', {
+        expression: PIX, awaitPromise: true, returnByValue: true, timeoutMs: 10000
+      }).catch(() => null);
+      const pix = pixRes && pixRes.result && pixRes.result.value ? JSON.parse(pixRes.result.value) : null;
+
+      check('截图尺寸 = 窗口 CSS 尺寸 × 缩放比',
+        !!pix && pix.w === Math.round(wi.viewport.w * wi.viewport.dpr)
+          && pix.h === Math.round(wi.viewport.h * wi.viewport.dpr),
+        pix ? (pix.w + '×' + pix.h + '，CSS ' + wi.viewport.w + '×' + wi.viewport.h
+          + ' × dpr ' + wi.viewport.dpr) : '解不出像素');
+
+      // 说明一下这里为什么不检查「卡片外缘是透明的」：
+      // 安全模式带了 --disable-gpu，透明窗口的 alpha 在截图里不保留（实测不透明率 100%），
+      // 那是环境特性而非缺陷。硬断言透明只会得到一条与产品无关的噪声。
+      check('内容已铺开（不透明面积 ≥ 70%）',
+        !!pix && pix.opaqueRatio >= 0.7,
+        pix ? (pix.opaqueRatio * 100).toFixed(1) + '%' : '');
+
+      // 墨量区间 —— 与分享图那轮同一个判据，因为它抓的是同一类错误：
+      // 空白卡（≈0%）和整片涂黑/文字溢出铺满（>45%）都会落在这条外面
+      check('墨量在合理区间（2%~45%，空白或涂满都会被抓住）',
+        !!pix && pix.inkRatio > 0.02 && pix.inkRatio < 0.45,
+        pix ? (pix.inkRatio * 100).toFixed(2) + '%' : '');
+
+      // 关键一条：既要有暗像素又要有亮像素 —— 说明卡上**存在对比**，即真的画出了字。
+      // 全是同一种明度就意味着白底白字或黑底黑字，那种图「结构全对但根本没法看」。
+      check('卡面存在明暗对比（文字真的渲染出来了，不是一片纯色）',
+        !!pix && pix.dark > 200 && pix.light > 200,
+        pix ? ('暗 ' + pix.dark + ' / 亮 ' + pix.light) : '');
+      check('颜色种类足够（有主题色与描边，不是单色块）',
+        !!pix && pix.kinds >= 4, pix ? String(pix.kinds) : '');
+    }
+
+    // ---------- 换一套数据：验「即将上课」与倒计时 ----------
+    await evalMain('window.CourseForgeDesktop.shell.push(' + JSON.stringify(wsB) + ')');
+    await sleep(600);   // 等主进程 tick 把新视图推给小组件
+    const w2 = await wcdp.send('Runtime.evaluate', {
+      expression: 'JSON.stringify({phase:(document.getElementById("card")||{}).getAttribute("data-phase"),'
+        + 'name:document.getElementById("wName").textContent,'
+        + 'head:document.getElementById("wHeadline").textContent,'
+        + 'meta:document.getElementById("wMeta").textContent})',
+      returnByValue: true, timeoutMs: 5000
+    });
+    const i2 = JSON.parse(w2.result.value);
+    check('切换数据后状态跟着变（夹具 B：即将上课）', i2.phase === 'next', 'data-phase=' + i2.phase);
+    check('课名跟着换', i2.name === '待上测试课', JSON.stringify(i2.name));
+    // 跨天夹具（+90 分钟会过午夜）时说「明天 … 上课」，同日夹具说「还有 N 分钟上课」——
+    // 两种都验，因为这正是最容易写错的那条分支
+    if (expectDaysAhead === 0) {
+      check('同日倒计时文案正确', /^还有 .*上课$/.test(i2.head), i2.head);
+    } else {
+      check('跨天文案正确（说「明天」而不是「还有 999 分钟」）',
+        /^明天 \d{2}:\d{2} 上课$/.test(i2.head), i2.head);
+    }
+    check('跨天/同日时次行含日期前缀', expectDaysAhead === 0
+      ? !/明天|本周|下周/.test(i2.meta)
+      : /明天|本周|下周/.test(i2.meta), i2.meta);
+
+    // ⚠️ 这里**绝不能**调 Browser.close：那是浏览器级命令，会把整个应用关掉，
+    //    后面几节全部超时。要断的只是这一个调试连接。
+    wcdp.ws.close();
+  }
+
+  console.log('\n=== 8. 小组件显隐与状态收敛 ===');
+  const hidden = await evalMain('window.CourseForgeDesktop.shell.hideWidget()');
+  check('shell.hideWidget() 返回成功', hidden === true);
+  const st1 = await evalMain('window.CourseForgeDesktop.shell.status()');
+  check('隐藏后状态回到 widgetVisible=false', !!st1 && st1.widgetVisible === false);
+  const toggled = await evalMain('window.CourseForgeDesktop.shell.toggleWidget()');
+  check('toggleWidget() 能再次打开', toggled === true);
+  const st2 = await evalMain('window.CourseForgeDesktop.shell.status()');
+  check('再次打开后 widgetVisible=true', !!st2 && st2.widgetVisible === true);
+  check('小组件置顶（常驻挂件的核心属性）', !!st2 && st2.alwaysOnTop === true);
+  check('小组件不占任务栏（skipTaskbar 生效）',
+    !!st2 && !!st2.bounds && st2.bounds.width === 360 && st2.bounds.height === 196,
+    st2 && st2.bounds ? JSON.stringify(st2.bounds) : '');
+  await evalMain('window.CourseForgeDesktop.shell.hideWidget()');
 
   console.log('\n--- 汇总 ---');
   console.log((failures.length === 0 ? '✅ 全部通过' : '❌ 失败 ' + failures.length + ' 项')

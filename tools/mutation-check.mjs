@@ -39,6 +39,10 @@ const FILES = {
   standalone: path.join(ROOT, 'tools/build-standalone.mjs'),
   indexHtml: path.join(ROOT, 'web/index.html'),
   share: path.join(ROOT, 'web/js/share-image.js'),
+  widgetStore: path.join(ROOT, 'desktop/widget-store.js'),
+  shellLayout: path.join(ROOT, 'desktop/shell-layout.js'),
+  widgetUi: path.join(ROOT, 'web/js/widget.js'),
+  app: path.join(ROOT, 'web/js/app.js'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
 const FIXTURE = 'tests/fixtures/cjk-timetable-rotated.pdf';
@@ -80,8 +84,28 @@ function between(text, startAnchor, endAnchor) {
 
 const mutations = [];
 
-/** 调试用：MUT_ONLY=12 只跑第 13 个变异（下标从 0 起） */
-const ONLY = process.env.MUT_ONLY !== undefined ? Number(process.env.MUT_ONLY) : null;
+/**
+ * 调试用：只跑指定的变异，避免为了验一条而等十几分钟。
+ * 支持单个下标、列表和范围（下标从 0 起）：
+ *   MUT_ONLY=12        第 13 条
+ *   MUT_ONLY=38-67     38 到 67 号
+ *   MUT_ONLY=1,5,9     指定几条
+ */
+const ONLY_SPEC = String(process.env.MUT_ONLY || '').trim();
+function onlyMatch(i) {
+  if (!ONLY_SPEC) return true;
+  for (const part of ONLY_SPEC.split(',')) {
+    const p = part.trim();
+    if (!p) continue;
+    const range = /^(\d+)\s*-\s*(\d+)$/.exec(p);
+    if (range) {
+      if (i >= Number(range[1]) && i <= Number(range[2])) return true;
+      continue;
+    }
+    if (Number(p) === i) return true;
+  }
+  return false;
+}
 
 // ==================== parser.js ====================
 
@@ -636,6 +660,367 @@ const ONLY = process.env.MUT_ONLY !== undefined ? Number(process.env.MUT_ONLY) :
   });
 }
 
+// ==================== 桌面常驻小组件：数据中枢 ====================
+//
+// 这一批守护的是「三处文案的唯一来源」（托盘提示 / 托盘菜单 / 小组件窗口）。
+// 共同点是：错了不会崩，只会**说错话** —— 未开学被说成「14 天没有课」、
+// 下周三被说成「周三」、作息没配被说成「没课」。这类错用户会当成产品缺陷，
+// 但任何结构化检查都看不出来，只能靠断言钉住。
+
+// 39) 未开学时不再单独分支 → 落到「接下来 14 天没有课」
+{
+  const anchor = "  if (view.phase === 'beforeterm') {";
+  mutations.push({
+    name: '未开学不单独说「距开学还有 N 天」',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "  if (false && view.phase === 'beforeterm') { // MUTANT")
+      : s)
+  });
+}
+
+// 40) 周次文案去掉下界判断 → 「第 0 周」「第 -2 周」
+{
+  const anchor = "  if (week < 1) return '未开学';";
+  mutations.push({
+    name: '周次文案不处理开学前（界面露出「第 0 周」）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '  // MUTANT') : s)
+  });
+}
+
+// 41) 跨天称呼前缀写成「下周」→「下周周三」（同一类「周」重复拼接的坑）
+{
+  const anchor = "  return (sameWeek ? '本' : '下') + CF.DAY_NAMES[R.weekdayOf(targetStart) - 1];";
+  mutations.push({
+    name: '跨天称呼拼成「下周周三」（前缀与 DAY_NAMES 都带「周」）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "  return (sameWeek ? '本周' : '下周') + CF.DAY_NAMES[R.weekdayOf(targetStart) - 1]; // MUTANT")
+      : s)
+  });
+}
+
+// 42) 把「明天」的分支去掉 → 明天的课被说成「本周X」
+{
+  const anchor = "  if (daysAhead === 1) return '明天';";
+  mutations.push({
+    name: '去掉「明天」的分支（次日课程被说成本周某天）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '  // MUTANT') : s)
+  });
+}
+
+// 43) 精确时刻退化成「从取整到分钟的字段反推」→ 秒级倒计时最多偏 30 秒。
+//     这是实现过程中真实出现过的缺陷：测试用具例落在分钟中段才发现。
+{
+  const anchor = '    startAt: raw.start.getTime(),';
+  mutations.push({
+    name: 'item 不给精确 startAt（渲染层只能从取整到分钟的值反推，秒级倒计时会偏）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    startAt: now.getTime() + startInMin * 60000, // MUTANT')
+      : s)
+  });
+}
+
+// 44) 跨天的课也给 startsInMin（界面会出现「还有 10080 分钟」）
+{
+  const anchor = '    startsInMin: daysAhead === 0 ? startInMin : null,';
+  mutations.push({
+    name: '跨天的课也给分钟倒计时（「还有 10080 分钟」）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    startsInMin: startInMin, // MUTANT')
+      : s)
+  });
+}
+
+// 45) phase 优先级颠倒：next 抢在 current 前面
+{
+  const anchor = "    else if (view.current) view.phase = 'current';\n    else if (view.next) view.phase = 'next';";
+  mutations.push({
+    name: 'phase 优先级颠倒（正在上课被报成「即将上课」）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "    else if (view.next) view.phase = 'next'; // MUTANT\n    else if (view.current) view.phase = 'current';")
+      : s)
+  });
+}
+
+// 46) 作息缺失判定写反 → 今天没课的日子被报成「作息时间缺失」
+{
+  const anchor = '    const missingTimes = listedToday.length > 0 && tl.items.length === 0;';
+  mutations.push({
+    name: '作息缺失判定写反（没课的日子被报成作息缺失）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    const missingTimes = listedToday.length === 0 || tl.items.length > 0; // MUTANT')
+      : s)
+  });
+}
+
+// 47) 放假标记被忽略 → 放假当天照常显示要上课
+{
+  const anchor = '    view.off = !!tl.off;';
+  mutations.push({
+    name: '忽略放假标记（放假当天仍显示要上课）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '    view.off = false; // MUTANT') : s)
+  });
+}
+
+// 48) tooltip 不再限制长度
+{
+  const anchor = "    return full.length > 120 ? full.slice(0, 119) + '…' : full;";
+  mutations.push({
+    name: 'tooltip 不做长度截断（Windows 会把它切在半路）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '    return full; // MUTANT') : s)
+  });
+}
+
+// 49) 无数据时错误地报成「没课」而不是「去导入」
+{
+  const anchor = "      phase: 'nodata',";
+  mutations.push({
+    name: '无课表被报成「没课」（用户不知道该去导入）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, "      phase: 'none', // MUTANT") : s)
+  });
+}
+
+// ==================== 桌面常驻小组件：窗口几何与偏好 ====================
+//
+// 这一批守护的是一个**用户自己救不回来**的场景：小组件没有任务栏按钮，
+// 窗口一旦落在屏幕外就再也抓不回来（拔外接屏、改分辨率都会触发）。
+
+// 50) 位置校验形同虚设 → 屏幕外的坐标被原样采用
+{
+  const anchor = '    if (isVisibleOn(saved, s, areas)) {';
+  mutations.push({
+    name: '位置校验形同虚设（屏幕外的坐标被原样采用，窗口再也找不回来）',
+    file: 'shellLayout',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    if (true) { // MUTANT')
+      : s)
+  });
+}
+
+// 51) 可见门槛降到 0 → 只露一条 1px 的边也算「看得见」
+{
+  const anchor = 'const MIN_VISIBLE = 48;';
+  mutations.push({
+    name: '可见门槛降为 0（只露一条边也算看得见，用户抓不到窗口）',
+    file: 'shellLayout',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, 'const MIN_VISIBLE = 0; // MUTANT') : s)
+  });
+}
+
+// 52) 回落位置丢掉边缘留白
+{
+  const anchor = '    x: Math.round(a.x + a.width - s.width - EDGE),';
+  mutations.push({
+    name: '回落位置丢掉边缘留白（贴死在屏幕边上）',
+    file: 'shellLayout',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    x: Math.round(a.x + a.width - s.width), // MUTANT')
+      : s)
+  });
+}
+
+// 53) 偏好文件读到数组也当合法
+{
+  const anchor = "    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};";
+  mutations.push({
+    name: '偏好文件读到数组也当合法结构',
+    file: 'shellLayout',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "    return (parsed && typeof parsed === 'object') ? parsed : {}; // MUTANT")
+      : s)
+  });
+}
+
+// 54) 写盘失败假装成功 → 位置记不住，用户每次都要重拖
+{
+  const anchor = '  } catch (e) {\n    return false;\n  }\n}';
+  const target = "function savePrefs(file, prefs) {";
+  mutations.push({
+    name: '偏好写盘失败假装成功（位置记不住却没有任何提示）',
+    file: 'shellLayout',
+    apply: (s) => {
+      const i = s.indexOf(target);
+      if (i < 0) return s;
+      const j = s.indexOf(anchor, i);
+      if (j < 0) return s;
+      return s.slice(0, j) + '  } catch (e) {\n    return true; // MUTANT\n  }\n}' + s.slice(j + anchor.length);
+    }
+  });
+}
+
+// 55) 图标候选倒着找（放着清晰的 .ico 不用，用了最糊的兜底 PNG）
+{
+  const anchor = '  for (let i = 0; i < list.length; i++) {';
+  mutations.push({
+    name: '图标候选倒着找（放着清晰的 .ico 不用，用了兜底的 PNG）',
+    file: 'shellLayout',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '  for (let i = list.length - 1; i >= 0; i--) { // MUTANT')
+      : s)
+  });
+}
+
+// ==================== 桌面常驻小组件：渲染层 ====================
+
+// 56) 回到「用取整到分钟的字段反推锚点」——即第 43 条那个缺陷的渲染侧版本
+{
+  const anchor = '      a.nextAt = v.next.startAt;';
+  mutations.push({
+    name: 'anchorsOf 从取整到分钟的 startsInMin 反推时刻（秒级倒计时最多偏 30 秒）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '      a.nextAt = base + v.next.startsInMin * 60000; // MUTANT')
+      : s)
+  });
+}
+
+// 57) 跨天的课也给倒计时锚点
+{
+  const anchor = "    if (v.phase === 'next' && v.next && v.next.daysAhead === 0";
+  mutations.push({
+    name: 'anchorsOf 跨天的课也给锚点（显示成「还有 10080 分钟」）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "    if (v.phase === 'next' && v.next && true")
+      : s)
+  });
+}
+
+// 58) 进度百分比不再夹取 → 进度条会溢出
+{
+  const anchor = '    return Math.max(0, Math.min(100, p));';
+  mutations.push({
+    name: '进度百分比不夹取（进度条宽度溢出）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '    return p; // MUTANT') : s)
+  });
+}
+
+// 59) 一小时以上不再切换到「小时」单位
+{
+  const anchor = "    if (h > 0) return m > 0 ? (h + ' 小时 ' + m + ' 分钟') : (h + ' 小时');";
+  mutations.push({
+    name: '倒计时不切换到小时单位（显示成「135 分钟」）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '    // MUTANT') : s)
+  });
+}
+
+// 60) 十分钟以内不再精确到秒
+{
+  const anchor = "    if (m >= 10) return m + ' 分钟';";
+  mutations.push({
+    name: '十分钟以内不给秒（临上课前只能看到「9 分钟」）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, "    if (m >= 1) return m + ' 分钟'; // MUTANT") : s)
+  });
+}
+
+// 61) 放假时不再把「下一节课」顶上来（只说放假，等于什么也没回答）
+{
+  const anchor = "    if (v.phase === 'off') return v.next || null;";
+  mutations.push({
+    name: '放假时不再显示下一节课',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '    if (v.phase === \'off\') return null; // MUTANT') : s)
+  });
+}
+
+// 62) 不是今天的课不加日期前缀（「08:00 ~ 09:40」会被当成今天要上课）
+{
+  const anchor = '    if (s.daysAhead > 0) parts.push(s.dayLabel);';
+  mutations.push({
+    name: '非当天的课不加日期前缀（明天的时间被当成今天的）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '    // MUTANT') : s)
+  });
+}
+
+// 63) 正在上课时也说「今天还有 N 节」而不是「今天最后一节」
+{
+  const anchor = "      return v.todayRemaining > 0 ? '今天还有 ' + v.todayRemaining + ' 节' : '今天最后一节';";
+  mutations.push({
+    name: '今天最后一节课也显示「今天还有 0 节」',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "      return '今天还有 ' + v.todayRemaining + ' 节'; // MUTANT")
+      : s)
+  });
+}
+
+// 64) 渲染时不再设置 data-phase（配色与进度条显隐全部失灵）
+{
+  const anchor = "    if (card && card.setAttribute) card.setAttribute('data-phase', v.phase || 'nodata');";
+  mutations.push({
+    name: 'render 不设置 data-phase（配色与进度条显隐全部失灵）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '    // MUTANT') : s)
+  });
+}
+
+// 65) 挂载时不再主动拉一次数据（要干等 30 秒的 tick）
+{
+  const anchor = '    pull();\n\n    // 每秒重画一次';
+  mutations.push({
+    name: 'boot 挂载时不主动拉数据（先空白，干等 30 秒）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor) ? s.replace(anchor, '\n    // 每秒重画一次 // MUTANT') : s)
+  });
+}
+
+// 66) 关闭按钮接成「打开课表」（点 ✕ 反而弹出主窗口）
+{
+  const anchor = "    if (close) close.addEventListener('click', function () { api.hide(); });";
+  mutations.push({
+    name: '关闭按钮接成 openMain（点 ✕ 反而弹出主窗口）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "    if (close) close.addEventListener('click', function () { api.openMain(); }); // MUTANT")
+      : s)
+  });
+}
+
+// ==================== 课表快照推送（网页端 → 主进程） ====================
+
+// 67) persist() 不再推送快照 → 托盘长期显示旧数据
+{
+  const anchor = '    ST.save({ version: 2, activeId: state.activeId, semesters: state.semesters });\n    pushToDesktop();';
+  mutations.push({
+    name: 'persist 不再把课表推给主进程（托盘长期显示旧数据）',
+    file: 'app',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    ST.save({ version: 2, activeId: state.activeId, semesters: state.semesters }); // MUTANT')
+      : s)
+  });
+}
+
+// 68) 推送失败把异常抛出去 → 课表保存被桌面外壳拖累
+//
+// ⚠️ 这里刻意**不动 try 的括号结构**：把 `try {` 换成 `{` 会造出语法错误，
+//    整个 app.js 加载不起来、所有用例一起红 —— 那种「红」是假阳性，
+//    证明不了这条断言真的在守护「异常被吞掉」这个行为。
+//    改 catch 体才是语法合法的、指向行为的变异。
+{
+  const anchor = '    } catch (e) {\n      return; // 桥不可用：当作网页版处理';
+  mutations.push({
+    name: '推送异常不吞掉（桌面外壳出问题会连累课表保存）',
+    file: 'app',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    } catch (e) {\n      throw e; // MUTANT')
+      : s)
+  });
+}
+
 // ==================== 运行 ====================
 
 // 保险 0：开始之前先确认工作区是干净的。
@@ -652,16 +1037,25 @@ for (const p of Object.values(FILES)) {
 }
 
 function runTests() {
+  // 单轮全量测试的上限。正常一轮 30~60 秒；超过说明这条变异让某个测试挂死
+  // （实测：某条变异让 jsdom 用例死循环，execSync 没超时就挂了 45 分钟）。
+  // 超时必须强杀并标成「无效判定」—— 它既不是护栏有效也不是假护栏。
+  const TEST_TIMEOUT_MS = 180000;
   try {
     return execSync(`"${NODE}" --test`, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      cwd: ROOT
+      cwd: ROOT,
+      timeout: TEST_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
     });
   } catch (e) {
     // 测试有失败断言时 execSync 会抛错，但 stdout 里仍然有完整报告 —— 正常路径。
     // 真正异常的是「stdout 和 stderr 都为空」，那说明进程根本没起来（如语法错误
     // 导致整个模块加载失败），此时必须把 e.message 带出来，否则只剩一个空字符串。
+    if (e.killed) {
+      return `[测试超时 ${TEST_TIMEOUT_MS / 1000}s 被强杀 —— 该变异很可能让某个测试死循环]`;
+    }
     const out = (e.stdout || '') + (e.stderr || '');
     return out || `[测试进程未产出任何输出] ${e.message}`;
   }
@@ -701,7 +1095,7 @@ for (const sig of ['exit', 'SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) {
 const stats = { red: 0, fake: 0, skipped: 0, inconclusive: 0, equivalent: 0 };
 
 for (const m of mutations) {
-  if (ONLY !== null && mutations.indexOf(m) !== ONLY) continue;
+  if (!onlyMatch(mutations.indexOf(m))) continue;
   const key = m.file || 'parser';
   const filePath = FILES[key];
   const orig = origOf(key);
