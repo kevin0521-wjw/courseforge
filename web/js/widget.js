@@ -172,6 +172,29 @@
     return Math.max(0, Math.min(100, p));
   }
 
+  /**
+   * 下一场考试/事件的一行文案（foot 第三格）。
+   * 只取第一条 —— 挂件 foot 只有一行位置，罗列是首页的事；
+   * 倒计时文案用主进程算好的 countdownText，不在这边再发明一份。
+   */
+  function eventLineOf(view) {
+    var v = view || {};
+    if (!Array.isArray(v.events) || !v.events.length) return '';
+    var ev = v.events[0];
+    if (!ev || !ev.name) return '';
+    // countdownText 由主进程算好（单一真相源）；这里是防御性兜底，
+    // 本文件不依赖 core.js，所以兜底只能内联一份极简版
+    var cd = ev.countdownText;
+    if (!cd) {
+      var n = ev.daysLeft;
+      if (n === 0) cd = '今天';
+      else if (n === 1) cd = '明天';
+      else if (typeof n === 'number' && isFinite(n) && n > 1) cd = '还有 ' + n + ' 天';
+    }
+    if (!cd) return '';
+    return (ev.kind === 'exam' ? '📝 ' : '📌 ') + ev.name + ' · ' + cd;
+  }
+
   // ==================== DOM 渲染 ====================
 
   function textOf(doc, id, value) {
@@ -204,6 +227,7 @@
     textOf(doc, 'wMeta', metaOf(v));
     textOf(doc, 'wToday', todayTextOf(v));
     textOf(doc, 'wDate', v.dateLabel || '');
+    textOf(doc, 'wEvent', eventLineOf(v));
 
     var fill = doc.getElementById('wFill');
     if (fill && fill.style) {
@@ -286,6 +310,7 @@
     termOf: termOf,
     anchorsOf: anchorsOf,
     percentOf: percentOf,
+    eventLineOf: eventLineOf,
     render: render,
     boot: boot
   };

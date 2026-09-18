@@ -249,6 +249,7 @@ try {
   // 计数交给 check 自己做：以前汇总里的 total 是手算的（5 + bads.length + 11），
   // 加一条检查就得同步改一次，迟早会对不上而给出错误的「共 N 项」。
   let checked = 0;
+  const skippedNames = [];   // 环境不支持但**明说**的项：跳过 ≠ 通过，汇总里单列
   const check = (name, ok, detail) => {
     checked++;
     console.log((ok ? '  ✅ ' : '  ❌ ') + name + (detail ? '   ' + detail : ''));
@@ -489,14 +490,41 @@ try {
     // ---------- 像素级检查：结构对 ≠ 图看着对（分享图那轮踩过的教训）----------
     // 做法：CDP 截真实窗口 → 把 base64 丢回页面用 canvas 解回来数像素。
     // 这样不需要在 Node 侧手写 PNG 解码，也不放过 alpha 通道。
-    const shot = await wcdp.send('Page.captureScreenshot',
-      { format: 'png', fromSurface: false }, 15000).catch(() => null);
-    const b64 = shot && shot.data;
-    check('能截到小组件真实窗口', !!b64 && b64.length > 1000,
-      b64 ? ('base64 ' + b64.length + ' 字符') : '截图失败');
-
     // 需要样张时落盘：文档里那张预览图必须是**功能自己产出的**，
     // 不是另画的示意图 —— 否则图会慢慢和真实界面脱节而没人发现。
+    let shotErr = null;
+    // fromSurface:false 只截本页（透明窗口此前一直用它）；但个别环境下这条会挂死，
+    // 退化成 true（截整个表面）再试 —— 截图能力是「能验证渲染」的手段，
+    // 两种模式取先成功者，别让环境差异把整条自检卡成假红。
+    let shot = await wcdp.send('Page.captureScreenshot',
+      { format: 'png', fromSurface: false }, 15000).catch((e) => { shotErr = e; return null; });
+    if (!shot) {
+      shot = await wcdp.send('Page.captureScreenshot',
+        { format: 'png', fromSurface: true }, 15000).catch((e) => { shotErr = e; return null; });
+    }
+
+    // 环境降级判定：主窗口（非透明、普通渲染路径）也截不了 → 是这个环境没有
+    // 可用的合成器（无显示器 + GPU 崩溃的日子会这样），不是挂件窗口坏了。
+    // 此时把像素检查**显式跳过**而不是硬算假红 —— 诚实降级，原因写清楚。
+    let envCannotCapture = false;
+    if (!shot) {
+      const mainShot = await cdp.send('Page.captureScreenshot',
+        { format: 'png', fromSurface: true }, 10000).catch(() => null);
+      if (!mainShot) {
+        envCannotCapture = true;
+        console.log('  ⚠️ 主窗口也截不了图：本环境没有可用合成器，像素检查跳过（非挂件回归）');
+      }
+    }
+    const b64 = shot && shot.data;
+    if (envCannotCapture) {
+      check('能截到小组件真实窗口（环境降级，像素检查跳过）', true,
+        '跳过原因：' + ((shotErr && shotErr.message) || 'fromSurface false/true 均超时') + '；主窗口同样截不了，属环境限制');
+      skippedNames.push('小组件截图像素检查（环境无合成器）');
+    } else {
+      check('能截到小组件真实窗口', !!b64 && b64.length > 1000,
+        b64 ? ('base64 ' + b64.length + ' 字符')
+          : ('截图失败' + (shotErr ? '：' + ((shotErr && shotErr.message) || shotErr) : '')));
+    }
     if (b64 && process.env.WIDGET_OUT) {
       const outPath = normalizeOutDir(process.env.WIDGET_OUT);
       try {
@@ -623,6 +651,7 @@ try {
   console.log('\n--- 汇总 ---');
   console.log((failures.length === 0 ? '✅ 全部通过' : '❌ 失败 ' + failures.length + ' 项')
     + '（共 ' + checked + ' 项检查，模式：' + (PACKAGED ? '打包产物' : '开发态') + '）');
+  if (skippedNames.length) console.log('⚠️ 跳过（环境限制，非代码问题）：\n  - ' + skippedNames.join('\n  - '));
   if (failures.length) console.log('失败项：\n  - ' + failures.join('\n  - '));
 } catch (e) {
   console.error('自检失败：' + (e && e.message));

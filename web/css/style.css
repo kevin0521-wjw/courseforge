@@ -1316,3 +1316,109 @@ html[data-theme="dark"] .mode-select { color-scheme: dark; }
   .cf-time { border-right: 0.5pt solid #ccc !important; }
   .cf-daycol { border-left: 0.5pt solid #ccc !important; }
 }
+
+/* ==================== 考试与事件倒计时 ==================== */
+
+/* 首页倒计时条：紧跟在「今日」面板下面，没有事件时整条隐藏 */
+.events-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px;
+}
+.event-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  background: var(--info-bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  white-space: nowrap;
+}
+.event-chip b {
+  color: var(--info-text);
+  font-weight: 600;
+}
+.event-chip i {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 12px;
+}
+/* 考试用警示色（跟普通事件区分开：考试是真的有 deadline 的东西） */
+.event-chip.event-exam {
+  background: var(--warn-bg);
+}
+.event-chip.event-exam b {
+  color: var(--warn);
+}
+/* 今天就是考 / 就是截止日：最醒目的一档 */
+.event-chip.event-today {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+.event-chip.event-today b {
+  color: var(--danger);
+}
+
+/* 设置抽屉里的管理列表 */
+.events-list { margin-bottom: 8px; }
+.event-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 13px;
+}
+.event-row:last-child { border-bottom: 0; }
+.event-row .event-kind {
+  flex: 0 0 auto;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.event-row.event-exam-row .event-kind,
+.event-row .event-kind.exam { background: var(--warn-bg); color: var(--warn); }
+.event-row .event-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.event-row .event-when { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+.event-row.event-past { opacity: .55; }
+.event-row.event-past .event-name { text-decoration: line-through; }
+
+/* 添加表单：一行塞下 名称 / 日期 / 时间 / 类型 / 添加 */
+.event-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.event-form input[type="text"] {
+  flex: 2 1 140px;
+  min-width: 0;
+}
+.event-form input[type="date"],
+.event-form input[type="time"] {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+.event-form select {
+  flex: 0 0 auto;
+}
+.event-form input,
+.event-form select {
+  padding: 6px 8px;
+  font-size: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field-bg);
+  color: var(--text);
+}

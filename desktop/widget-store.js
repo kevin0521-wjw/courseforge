@@ -226,7 +226,8 @@ function createWidgetStore(opts) {
       // 界面也可以据此换配色（如放假用灰、正在上用强调色）
       phase: 'nodata',
       current: null,
-      next: null
+      next: null,
+      events: []
     };
   }
 
@@ -301,6 +302,10 @@ function createWidgetStore(opts) {
     else view.phase = 'none';
 
     view.statusLine = statusLineOf(view);
+
+    // 考试与自定义事件：跟课程无关，无论学期内还是假期都展示
+    // （「暑假里还挂着 8 月底的驾照考试」是合理诉求，不能因为放假就吞掉）
+    view.events = CF.upcomingEvents(sem.events, t, 2);
     return view;
   }
 
@@ -310,9 +315,20 @@ function createWidgetStore(opts) {
     const head = v.hasData
       ? ('课表工坊 · ' + (v.weekLabel ? v.weekLabel + ' ' : '') + v.weekdayLabel + ' ' + v.date)
       : '课表工坊';
-    const line = v.statusLine || '';
+    let line = v.statusLine || '';
+    // 7 天内的考试值得在托盘上占一行 —— 学生看托盘就是怕错过东西
+    // （普通事件不上托盘：截止日是自己记的事，托盘留给最硬的 deadline）
+    let examLine = '';
+    if (v.hasData && Array.isArray(v.events)) {
+      for (let i = 0; i < v.events.length; i++) {
+        const ev = v.events[i];
+        if (ev.kind !== 'exam' || ev.daysLeft > 7) continue;
+        examLine = '📝 ' + ev.name + ' ' + (ev.countdownText || CF.countdownTextOf(ev.daysLeft));
+        break;
+      }
+    }
     // Windows 托盘提示超过约 127 字符会被截断，先自己截，免得断在半个字上
-    const full = head + (line ? '\n' : '') + line;
+    const full = head + (line ? '\n' : '') + line + (examLine ? '\n' + examLine : '');
     return full.length > 120 ? full.slice(0, 119) + '…' : full;
   }
 

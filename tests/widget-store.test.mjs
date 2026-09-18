@@ -360,3 +360,73 @@ test('同一份数据在不同时刻取视图互不干扰（buildView 无副作�
   const a2 = s.buildView(at(2026, 9, 16, 11, 0));
   assert.deepEqual(a2, a);
 });
+
+// ==================== 考试与事件（P3） ====================
+
+/** 造一个带事件的学期工作区 */
+function termWithEvents(events) {
+  const ws = term([math]);
+  ws.semesters[0].events = events;
+  return ws;
+}
+
+test('buildView：events 字段始终存在（空数据也是 []），界面不用判空', () => {
+  const s = WS.createWidgetStore();
+  const empty = s.buildView(at(2026, 9, 16, 11, 0));
+  assert.deepEqual(empty.events, [], '无数据也要是数组，不能是 undefined');
+
+  const s2 = WS.createWidgetStore();
+  s2.setWorkspace(term([math]));
+  assert.deepEqual(s2.buildView(at(2026, 9, 16, 11, 0)).events, [], '学期没有事件同样如此');
+});
+
+test('buildView：最近的考试与事件带倒计时文案，过去的与坏的不出现', () => {
+  const s = WS.createWidgetStore();
+  s.setWorkspace(termWithEvents([
+    { name: '高数期末', date: '2026-09-20', kind: 'exam', time: '09:00' },
+    { name: '小组作业截止', date: '2026-09-25', kind: 'custom' },
+    { name: '上周的截止', date: '2026-09-01', kind: 'custom' },
+    { name: '', date: '2026-09-30' }
+  ]));
+  const v = s.buildView(at(2026, 9, 16, 11, 0));
+  assert.equal(v.events.length, 2);
+  assert.equal(v.events[0].name, '高数期末');
+  assert.equal(v.events[0].countdownText, '还有 4 天');
+  assert.equal(v.events[1].countdownText, '还有 9 天');
+});
+
+test('buildView：暑假里挂着的考试照样显示（事件不因放假 / 学期结束被吞）', () => {
+  // 学期 20 周到 2027-01-31 结束；把事件放到学期结束后仍要出现
+  const s = WS.createWidgetStore();
+  s.setWorkspace(termWithEvents([{ name: '驾照科目一', date: '2026-09-20', kind: 'custom' }]));
+  const v = s.buildView(at(2026, 9, 16, 11, 0));
+  assert.equal(v.events.length, 1);
+  assert.equal(v.events[0].name, '驾照科目一');
+});
+
+test('tooltip：7 天内的考试占第三行；普通事件与远期考试不上托盘', () => {
+  const s = WS.createWidgetStore();
+  s.setWorkspace(termWithEvents([
+    { name: '高数期末', date: '2026-09-20', kind: 'exam' },        // 4 天后 → 上
+    { name: '小组作业截止', date: '2026-09-17', kind: 'custom' },  // 明天，但普通事件 → 不上
+    { name: '元旦晚会', date: '2027-01-01', kind: 'exam' }         // 太远 → 不上
+  ]));
+  const tip = s.tooltip(at(2026, 9, 16, 11, 0));
+  assert.match(tip, /📝 高数期末 还有 4 天/, '7 天内的考试必须在托盘上');
+  assert.ok(!/小组作业截止/.test(tip), '普通事件不占托盘');
+  assert.ok(!/元旦晚会/.test(tip), '远期考试不占托盘');
+
+  const s2 = WS.createWidgetStore();
+  s2.setWorkspace(termWithEvents([{ name: '远期考试', date: '2026-12-01', kind: 'exam' }]));
+  const tip2 = s2.tooltip(at(2026, 9, 16, 11, 0));
+  assert.equal(tip2.split('\n').length, 2, '没有近考试时 tooltip 保持两行');
+});
+
+test('tooltip：考试行也会遵守 120 字符上限（超长的考试名被截断而不是溢出）', () => {
+  const s = WS.createWidgetStore();
+  s.setWorkspace(termWithEvents([
+    { name: '超长考试名'.repeat(10), date: '2026-09-20', kind: 'exam' }
+  ]));
+  const tip = s.tooltip(at(2026, 9, 16, 11, 0));
+  assert.ok(tip.length <= 120, '实际 ' + tip.length + ' 字符');
+});

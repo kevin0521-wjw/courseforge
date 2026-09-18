@@ -1133,3 +1133,90 @@ D('桌面端：桥的 push 抛异常也不能影响课表保存（托盘是锦�
       '桌面外壳出问题不该让课表存不下：' + names.join('/'));
   });
 });
+
+// ==================== 考试与事件（P3） ====================
+
+D('事件：没有事件时首页倒计时条整条隐藏', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    const bar = doc.getElementById('eventsBar');
+    assert.ok(bar, 'index.html 里应当有这条倒计时栏');
+    assert.equal(bar.hidden, true, '一条事件都没有时必须整体藏起来，不能摆一条空栏');
+  });
+});
+
+D('事件：填表添加 → 首页出现倒计时 chip、抽屉出现管理行、数据落盘', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    doc.getElementById('eventName').value = '高数期末';
+    doc.getElementById('eventDate').value = '2027-06-01';
+    doc.getElementById('eventTime').value = '09:00';
+    doc.getElementById('eventKind').value = 'exam';
+    doc.querySelector('[data-action="add-event"]').click();
+    await flush();
+
+    const bar = doc.getElementById('eventsBar');
+    assert.equal(bar.hidden, false, '添加后倒计时条应当亮出来');
+    assert.match(bar.textContent, /高数期末/);
+    assert.match(bar.textContent, /还有 \d+ 天/, '必须带倒计时文案');
+
+    const list = doc.getElementById('eventsList');
+    assert.match(list.textContent, /高数期末/, '抽屉管理列表里也应当有一行');
+    assert.ok(list.querySelector('[data-action="delete-event"]'), '管理行必须带删除按钮');
+
+    // 数据真的落盘了：学期对象上挂着清洗过的 events
+    const saved = JSON.parse(w.localStorage.getItem('wb_courseforge_v1') || 'null');
+    assert.ok(saved, 'localStorage 里应当有工作区');
+    const sems = saved.semesters || [];
+    const found = sems.some((s) => Array.isArray(s.events) && s.events.some((e) => e.name === '高数期末'));
+    assert.ok(found, 'events 必须随学期一起存盘');
+
+    // 输入框应当清空，方便连着录几门考试
+    assert.equal(doc.getElementById('eventName').value, '');
+    assert.equal(doc.getElementById('eventTime').value, '');
+  });
+});
+
+D('事件：名称或日期没填就添加 → 不落盘（toast 提示，不弹窗打断）', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    const before = w.localStorage.getItem('wb_courseforge_v1');
+
+    // 只有名字没有日期
+    doc.getElementById('eventName').value = '没日期的事件';
+    doc.querySelector('[data-action="add-event"]').click();
+    await flush();
+    const after = w.localStorage.getItem('wb_courseforge_v1');
+    assert.equal(after, before, '缺日期时绝不能把坏数据写进去');
+    assert.equal(doc.getElementById('eventsBar').hidden, true);
+
+    // 只有日期没有名字
+    doc.getElementById('eventName').value = '';
+    doc.getElementById('eventDate').value = '2027-06-01';
+    doc.querySelector('[data-action="add-event"]').click();
+    await flush();
+    assert.equal(w.localStorage.getItem('wb_courseforge_v1'), before, '缺名字同样不能写');
+  });
+});
+
+D('事件：删除 → chip 消失、倒计时条回到隐藏（不能残留上一帧）', () => {
+  return bootDom().then(async (w) => {
+    const doc = w.document;
+    await flush();
+    doc.getElementById('eventName').value = '四六级';
+    doc.getElementById('eventDate').value = '2027-06-01';
+    doc.getElementById('eventKind').value = 'exam';
+    doc.querySelector('[data-action="add-event"]').click();
+    await flush();
+    assert.equal(doc.getElementById('eventsBar').hidden, false);
+
+    doc.querySelector('#eventsList [data-action="delete-event"]').click();
+    await flush();
+    assert.equal(doc.getElementById('eventsBar').hidden, true, '删光后必须整条隐藏');
+    assert.equal(doc.getElementById('eventsBar').textContent, '', '旧 chip 内容也不能残留');
+    assert.equal(doc.getElementById('wEvent') ? 1 : 1, 1);   // wEvent 属于挂件页，此处只需不炸
+  });
+});

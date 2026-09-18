@@ -483,16 +483,122 @@
     return y + ' 春季学期';
   }
 
+  // ==================== 考试与自定义事件 ====================
+  //
+  // 挂在学期上（semester.events），跟学期一起切换 / 删除 / 备份，不另开存储。
+  // schema 仍是 v2 —— events 是可选字段，旧数据没有它就当空数组，无需迁移。
+  //   { id, name, date: 'YYYY-MM-DD', time: 'HH:MM'|'', note: '', kind: 'exam'|'custom' }
+
+  /** 事件名/备注的长度上限：塞进倒计时 chip 和托盘提示都不至于溢出 */
+  var EVENT_NAME_MAX = 24;
+  var EVENT_NOTE_MAX = 60;
+
+  /**
+   * 清洗单个事件。名字为空或日期非法时返回 null（调用方应把 null 丢掉）——
+   * 一条坏数据不值得让整场考试消失，但也不值得为它留壳。
+   */
+  function normalizeEvent(raw) {
+    raw = (raw && typeof raw === 'object') ? raw : {};
+    var name = String(raw.name == null ? '' : raw.name).trim();
+    var d = parseDate(raw.date);
+    if (!name || !d) return null;
+    if (name.length > EVENT_NAME_MAX) name = name.slice(0, EVENT_NAME_MAX);
+    var time = '';
+    // 时间要真的合法（小时 ≤23、分 ≤59）并零填充成 HH:MM —— 零填充后字符串比较
+    // 与数值比较同序，「同一天按时间先后排」才不会把 9:00 排到 10:00 后面
+    var tm = /^(\d{1,2}):(\d{2})$/.exec(String(raw.time || ''));
+    if (tm) {
+      var hh = Number(tm[1]);
+      var mm = Number(tm[2]);
+      if (hh <= 23 && mm <= 59) {
+        time = (hh < 10 ? '0' + hh : String(hh)) + ':' + (mm < 10 ? '0' + mm : String(mm));
+      }
+    }
+    var note = String(raw.note == null ? '' : raw.note).trim();
+    if (note.length > EVENT_NOTE_MAX) note = note.slice(0, EVENT_NOTE_MAX);
+    return {
+      id: (raw.id != null && String(raw.id)) ? String(raw.id) : uid(),
+      name: name,
+      date: formatDate(d),
+      time: time,
+      note: note,
+      // kind 只认两种：写错的当作普通事件而不是丢弃（名字日期都好的数据不值得扔）
+      kind: (raw.kind === 'exam') ? 'exam' : 'custom'
+    };
+  }
+
+  /** 清洗事件数组：丢掉非法项；id 重复的重新发号（同课程的处理方式） */
+  function normalizeEvents(list) {
+    if (!Array.isArray(list)) return [];
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < list.length; i++) {
+      var ev = normalizeEvent(list[i]);
+      if (!ev) continue;
+      while (seen[ev.id]) ev.id = uid();
+      seen[ev.id] = true;
+      out.push(ev);
+    }
+    return out;
+  }
+
+  /** 自然日差：同一天是 0，明天是 1（不受时刻影响——「今天 23 点的考试」也是今天） */
+  function daysUntil(dateStr, now) {
+    var d = parseDate(dateStr);
+    if (!d) return null;
+    var today = startOfDay(now);
+    var target = startOfDay(d);
+    return Math.round((target.getTime() - today.getTime()) / 86400000);
+  }
+
+  /**
+   * 接下来的事件：丢掉已经过去的（今天的不丢——考完试当天还想知道「就是今天」），
+   * 按日期升序（同日按时间早的在前），只留前 limit 条。
+   */
+  function upcomingEvents(events, now, limit) {
+    var list = normalizeEvents(events);
+    var future = [];
+    for (var i = 0; i < list.length; i++) {
+      var left = daysUntil(list[i].date, now);
+      if (left == null || left < 0) continue;
+      future.push({ ev: list[i], left: left });
+    }
+    future.sort(function (a, b) {
+      if (a.left !== b.left) return a.left - b.left;
+      var ta = a.ev.time ? a.ev.time : '99:99';
+      var tb = b.ev.time ? b.ev.time : '99:99';
+      return ta < tb ? -1 : (ta > tb ? 1 : 0);
+    });
+    var n = (isFinite(limit) && limit > 0) ? Math.floor(limit) : 3;
+    return future.slice(0, n).map(function (x) {
+      return {
+        id: x.ev.id, name: x.ev.name, date: x.ev.date, time: x.ev.time,
+        note: x.ev.note, kind: x.ev.kind, daysLeft: x.left,
+        // 文案在这里就定稿：首页 chip、托盘、挂件都用这一份，不会出现
+        // 「托盘说明天、挂件说还有 1 天」这种同一事实两种说法
+        countdownText: countdownTextOf(x.left)
+      };
+    });
+  }
+
+  /** 倒计时短文案：chip / 托盘 / 挂件共用，别再造第二份（会写出「还有 0 天」这种话） */
+  function countdownTextOf(daysLeft) {
+    if (daysLeft === 0) return '今天';
+    if (daysLeft === 1) return '明天';
+    return '还有 ' + daysLeft + ' 天';
+  }
+
   /** 清洗单个学期；id 缺失时用 fallbackId 兜底 */
   function normalizeSemester(raw, fallbackId) {
     raw = (raw && typeof raw === 'object') ? raw : {};
     var settings = normalizeSettings(raw.settings);
     var courses = Array.isArray(raw.courses) ? raw.courses.map(normalizeCourse) : [];
+    var events = normalizeEvents(raw.events);
     var name = String(raw.name == null ? '' : raw.name).trim();
     if (!name) name = defaultSemesterName(settings.semesterStart);
     if (name.length > 20) name = name.slice(0, 20);
     var id = (raw.id != null && String(raw.id)) ? String(raw.id) : String(fallbackId || uid());
-    return { id: id, name: name, settings: settings, courses: courses };
+    return { id: id, name: name, settings: settings, courses: courses, events: events };
   }
 
   /**
@@ -698,6 +804,14 @@
     courseStatus: courseStatus,
     normalizeCourse: normalizeCourse,
     normalizeSettings: normalizeSettings,
+    // 考试与自定义事件
+    normalizeEvent: normalizeEvent,
+    normalizeEvents: normalizeEvents,
+    upcomingEvents: upcomingEvents,
+    daysUntil: daysUntil,
+    countdownTextOf: countdownTextOf,
+    EVENT_NAME_MAX: EVENT_NAME_MAX,
+    EVENT_NOTE_MAX: EVENT_NOTE_MAX,
     // 多学期（工作区）
     defaultSemesterName: defaultSemesterName,
     normalizeSemester: normalizeSemester,

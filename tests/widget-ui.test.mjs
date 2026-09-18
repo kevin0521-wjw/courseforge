@@ -415,3 +415,46 @@ test('boot：缺少可选接口（onUpdate / 按钮）时不抛异常', { skip: 
     assert.doesNotThrow(() => W.boot(minimal, null));
   });
 });
+
+// ==================== 4. 事件倒计时行（foot 第三格） ====================
+
+test('eventLineOf：无事件 / 空数组 / 缺名字都返回空串，foot 不留空白格子', () => {
+  assert.equal(W.eventLineOf(null), '');
+  assert.equal(W.eventLineOf({}), '');
+  assert.equal(W.eventLineOf({ events: [] }), '');
+  assert.equal(W.eventLineOf({ events: [{ name: '', daysLeft: 3, countdownText: '还有 3 天' }] }), '');
+});
+
+test('eventLineOf：考试与普通事件前缀不同，文案用主进程给的 countdownText', () => {
+  assert.equal(
+    W.eventLineOf({ events: [{ name: '高数期末', kind: 'exam', daysLeft: 4, countdownText: '还有 4 天' }] }),
+    '📝 高数期末 · 还有 4 天'
+  );
+  assert.equal(
+    W.eventLineOf({ events: [{ name: '小组作业', kind: 'custom', daysLeft: 1, countdownText: '明天' }] }),
+    '📌 小组作业 · 明天'
+  );
+});
+
+test('eventLineOf：countdownText 缺失时兜底（不依赖 core.js，内联极简版）', () => {
+  assert.equal(W.eventLineOf({ events: [{ name: 'x', kind: 'exam', daysLeft: 0 }] }), '📝 x · 今天');
+  assert.equal(W.eventLineOf({ events: [{ name: 'x', kind: 'exam', daysLeft: 1 }] }), '📝 x · 明天');
+  assert.equal(W.eventLineOf({ events: [{ name: 'x', kind: 'exam', daysLeft: 9 }] }), '📝 x · 还有 9 天');
+  // daysLeft 也不合法（不该发生）→ 宁可空着也不写坏话
+  assert.equal(W.eventLineOf({ events: [{ name: 'x', kind: 'exam', daysLeft: null }] }), '');
+});
+
+test('render：有事件时把倒计时写进 wEvent；没有时清空（旧内容不能残留）', { skip: !JSDOM }, async () => {
+  await withDom(async (doc) => {
+    const now = new Date(2026, 8, 16, 12, 30);
+    const view = realView([MATH], null, now);
+    view.events = [{ id: 'e1', name: '高数期末', kind: 'exam', daysLeft: 4, countdownText: '还有 4 天' }];
+    W.render(doc, view, now.getTime());
+    assert.equal(doc.getElementById('wEvent').textContent, '📝 高数期末 · 还有 4 天');
+
+    // 下一帧事件消失了（被删掉）→ wEvent 必须清空，不能留着上一帧的考试吓人
+    view.events = [];
+    W.render(doc, view, now.getTime());
+    assert.equal(doc.getElementById('wEvent').textContent, '');
+  });
+});

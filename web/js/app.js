@@ -183,6 +183,9 @@
     // 学期列表（设置抽屉内）
     var semList = document.getElementById('semesterList');
     if (semList) semList.innerHTML = CR.renderSemesterList(state.semesters, state.activeId);
+
+    // 考试与事件倒计时条（最近 3 条；没有则整条隐藏）
+    renderEventsBar();
   }
 
   // ==================== 课程弹窗 ====================
@@ -548,6 +551,7 @@
       preview.innerHTML = rows;
     }
     syncRemindUI();
+    syncEventsUI();
   }
 
   /** 把提醒相关的设置与权限状态刷到设置抽屉里 */
@@ -578,6 +582,114 @@
   function updateNotifyUI() {
     var el = document.getElementById('notifyState');
     if (el) el.textContent = notifyStateText();
+  }
+
+  // ==================== 考试与事件 ====================
+
+  /** 当前学期的事件数组（事件直接挂在学期对象上，跟学期一起切换/备份/删除） */
+  function activeEvents() {
+    var sem = activeSemesterObj();
+    return (sem && Array.isArray(sem.events)) ? sem.events : [];
+  }
+
+  /** '2026-09-30' → '9 月 30 日'（个位不加 0，与今日面板同风格） */
+  function shortDateText(dateStr) {
+    var p = String(dateStr || '').split('-');
+    if (p.length !== 3) return dateStr;
+    return Number(p[1]) + ' 月 ' + Number(p[2]) + ' 日';
+  }
+
+  /** 首页倒计时条：最近 3 条事件，今天的高亮；一条也没有时整条隐藏 */
+  function renderEventsBar() {
+    var bar = document.getElementById('eventsBar');
+    if (!bar) return;
+    var list = CF.upcomingEvents(activeEvents(), new Date(), 3);
+    if (!list.length) {
+      bar.hidden = true;
+      bar.innerHTML = '';
+      return;
+    }
+    bar.hidden = false;
+    var html = '';
+    for (var i = 0; i < list.length; i++) {
+      var ev = list[i];
+      var cls = 'event-chip' + (ev.kind === 'exam' ? ' event-exam' : '') + (ev.daysLeft === 0 ? ' event-today' : '');
+      var time = ev.time ? ' ' + CR.esc(ev.time) : '';
+      html += '<span class="' + cls + '" title="' + CR.esc(ev.name + ' · ' + ev.date + (ev.time ? ' ' + ev.time : '')) + '">'
+        + (ev.kind === 'exam' ? '📝' : '📌') + CR.esc(ev.name)
+        + '<b>' + CR.esc(CF.countdownTextOf(ev.daysLeft)) + '</b>'
+        + '<i>' + CR.esc(shortDateText(ev.date)) + time + '</i></span>';
+    }
+    bar.innerHTML = html;
+  }
+
+  /** 设置抽屉里的管理列表：显示本学期全部事件（含已过去的，标灰），可删 */
+  function syncEventsUI() {
+    var box = document.getElementById('eventsList');
+    if (!box) return;
+    var all = CF.normalizeEvents(activeEvents());
+    all.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+    if (!all.length) {
+      box.innerHTML = '<p class="hint">还没有考试或事件，用下面一行添加。</p>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < all.length; i++) {
+      var ev = all[i];
+      var left = CF.daysUntil(ev.date, new Date());
+      var past = (left == null || left < 0);
+      var when = shortDateText(ev.date) + (ev.time ? ' ' + CR.esc(ev.time) : '');
+      html += '<div class="event-row' + (past ? ' event-past' : '') + '">'
+        + '<span class="event-kind">' + (ev.kind === 'exam' ? '考试' : '事件') + '</span>'
+        + '<span class="event-name">' + CR.esc(ev.name) + '</span>'
+        + '<span class="event-when">' + when + (past ? '（已过）' : '') + '</span>'
+        + '<button type="button" class="btn btn-ghost danger-text" data-action="delete-event" data-id="' + CR.esc(ev.id) + '" aria-label="删除 ' + CR.esc(ev.name) + '">删除</button>'
+        + '</div>';
+    }
+    box.innerHTML = html;
+  }
+
+  /** 添加事件：只动当前学期，清洗后整体回写（坏数据在 normalize 里就被拦下了） */
+  function onAddEvent() {
+    var nameEl = document.getElementById('eventName');
+    var dateEl = document.getElementById('eventDate');
+    var timeEl = document.getElementById('eventTime');
+    var kindEl = document.getElementById('eventKind');
+    var name = nameEl ? nameEl.value.trim() : '';
+    if (!name) { showToast('请填写名称'); return; }
+    var date = dateEl ? dateEl.value : '';
+    if (!date) { showToast('请选择日期'); return; }
+    var ev = CF.normalizeEvent({
+      name: name,
+      date: date,
+      time: timeEl ? timeEl.value : '',
+      kind: kindEl ? kindEl.value : 'custom'
+    });
+    if (!ev) { showToast('日期无效，请重新选择'); return; }
+    var sem = activeSemesterObj();
+    if (!sem) return;
+    sem.events = CF.normalizeEvents((sem.events || []).concat([ev]));
+    persist();
+    if (nameEl) nameEl.value = '';
+    if (timeEl) timeEl.value = '';
+    syncEventsUI();
+    renderEventsBar();
+    showToast('已添加' + (ev.kind === 'exam' ? '考试' : '事件') + '：' + ev.name);
+  }
+
+  /** 删除事件：按 id 找到才删，找不到安静跳过（重复点击不炸） */
+  function onDeleteEvent(id) {
+    var sem = activeSemesterObj();
+    if (!sem || !Array.isArray(sem.events) || !id) return;
+    var kept = [];
+    for (var i = 0; i < sem.events.length; i++) {
+      if (sem.events[i].id !== id) kept.push(sem.events[i]);
+    }
+    if (kept.length === sem.events.length) return;
+    sem.events = CF.normalizeEvents(kept);
+    persist();
+    syncEventsUI();
+    renderEventsBar();
   }
 
   function onSettingsSave() {
@@ -1084,11 +1196,15 @@
     },
     'open-settings': function () {
       syncSettingsUI();
+      syncEventsUI();
       if (desktopWidgetResync) desktopWidgetResync();
       document.getElementById('settingsPanel').hidden = false;
     },
     'close-settings': function () { document.getElementById('settingsPanel').hidden = true; },
     'save-settings': onSettingsSave,
+    // 考试与事件
+    'add-event': onAddEvent,
+    'delete-event': function (el) { onDeleteEvent(el.getAttribute('data-id')); },
     'export-json': exportJSON,
     'export-ics': exportICS,
     'print-schedule': function () { window.print(); },

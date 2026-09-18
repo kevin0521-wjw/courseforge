@@ -43,6 +43,7 @@ const FILES = {
   shellLayout: path.join(ROOT, 'desktop/shell-layout.js'),
   widgetUi: path.join(ROOT, 'web/js/widget.js'),
   app: path.join(ROOT, 'web/js/app.js'),
+  core: path.join(ROOT, 'web/js/core.js'),
   fixtureGen: path.join(ROOT, 'tools/make-rotated-timetable-fixture.py')
 };
 const FIXTURE = 'tests/fixtures/cjk-timetable-rotated.pdf';
@@ -1023,8 +1024,69 @@ function onlyMatch(i) {
   });
 }
 
-// ==================== 运行 ====================
+// ==================== 考试与事件（P3） ====================
 
+// 69) 倒计时文案烂掉：「今天」说成「还有 0 天」——语气错得很难看
+{
+  const anchor = "  function countdownTextOf(daysLeft) {\n    if (daysLeft === 0) return '今天';";
+  mutations.push({
+    name: '倒计时文案：今天说成「还有 0 天」（机器味）',
+    file: 'core',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "  function countdownTextOf(daysLeft) {\n    if (daysLeft === 0) return '还有 0 天'; // MUTANT")
+      : s)
+  });
+}
+
+// 70) 过滤过去的失效：考完试还挂在倒计时条上
+{
+  const anchor = '      if (left == null || left < 0) continue;';
+  mutations.push({
+    name: 'upcomingEvents：过去的日期不再过滤（考完试还挂在条上）',
+    file: 'core',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '      if (left == null) continue; // MUTANT')
+      : s)
+  });
+}
+
+// 71) 清洗不再丢坏数据：空名字的事件原样通过
+{
+  const anchor = '    if (!name || !d) return null;';
+  mutations.push({
+    name: 'normalizeEvent：空名字 / 坏日期不再丢弃（一条坏数据污染整个列表）',
+    file: 'core',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, '    if (!d) return null; // MUTANT（名字不再校验）')
+      : s)
+  });
+}
+
+// 72) 托盘考试行的 7 天门槛失效：远期考试也挤上托盘
+{
+  const anchor = "        if (ev.kind !== 'exam' || ev.daysLeft > 7) continue;";
+  mutations.push({
+    name: 'tooltip：7 天门槛失效（远期考试也挤上托盘，挤掉真正要紧的两行）',
+    file: 'widgetStore',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "        if (ev.kind !== 'exam') continue; // MUTANT（不再看天数）")
+      : s)
+  });
+}
+
+// 73) 挂件事件行不再用主进程文案：countdownText 被无视（退化为拼数字）
+{
+  const anchor = "    return (ev.kind === 'exam' ? '📝 ' : '📌 ') + ev.name + ' · ' + cd;";
+  mutations.push({
+    name: 'eventLineOf：无视 countdownText（拼出「高数期末 · 4」这种半截话）',
+    file: 'widgetUi',
+    apply: (s) => (s.includes(anchor)
+      ? s.replace(anchor, "    return (ev.kind === 'exam' ? '📝 ' : '📌 ') + ev.name + ' · ' + ev.daysLeft; // MUTANT")
+      : s)
+  });
+}
+
+// ==================== 运行 ====================
 // 保险 0：开始之前先确认工作区是干净的。
 // 曾经发生过：上一次运行被 SIGTERM（超时）强杀，把 // MUTANT 留在了源文件里，
 // 于是下一次运行的「基线」本身就是坏的 —— 每个变异都「变红」，

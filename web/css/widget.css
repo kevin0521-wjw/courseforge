@@ -203,6 +203,19 @@ html, body {
   color: var(--faint);
 }
 
+/* 下一场考试/事件：空着不占位；有内容时限宽截断，别把日期挤出去。
+   用 --accent 跟随状态配色（今天要考的试在最醒目的那档） */
+.foot .w-event {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: 10px;
+  text-align: right;
+  color: var(--accent, var(--faint));
+}
+
 /* ---------- 按状态换强调色 ---------- */
 
 .card[data-phase="off"]       { --accent: #f59e0b; }

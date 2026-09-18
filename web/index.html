@@ -57,6 +57,9 @@
     <!-- 今天要处理（置顶） -->
     <section id="todayPanel" class="today-panel panel" aria-label="今日课程"></section>
 
+    <!-- 考试与事件倒计时（没有事件时整条隐藏） -->
+    <section id="eventsBar" class="events-bar panel" aria-label="考试与事件倒计时" hidden></section>
+
     <!-- 工具栏 -->
     <section class="toolbar panel">
       <div id="weekNav" class="toolbar-week"></div>
@@ -151,6 +154,22 @@
           <p class="hint" id="notifyState">—</p>
           <button type="button" class="btn btn-ghost" data-action="request-notify">允许浏览器通知</button>
           <p class="hint">网页版要页面开着才会提醒；桌面版由系统直接弹通知。放假与调休在「今天」面板上点一下就能标记。</p>
+        </div>
+
+        <div class="field">
+          <span class="field-label">考试与事件倒计时（跟当前学期走）</span>
+          <div id="eventsList" class="events-list"></div>
+          <div class="event-form">
+            <input type="text" id="eventName" name="eventName" placeholder="名称，如：高数期末" maxlength="24" aria-label="事件名称">
+            <input type="date" id="eventDate" name="eventDate" aria-label="事件日期">
+            <input type="time" id="eventTime" name="eventTime" aria-label="时间（可选）">
+            <select id="eventKind" name="eventKind" aria-label="类型">
+              <option value="exam">考试</option>
+              <option value="custom">其他</option>
+            </select>
+            <button type="button" class="btn btn-ghost" data-action="add-event">添加</button>
+          </div>
+          <p class="hint">最近的 3 条会显示在首页倒计时条上；7 天内的考试也会出现在托盘提示和桌面挂件里。</p>
         </div>
 
         <!-- 仅桌面版显示：网页版没有桌面外壳这座桥，由 app.js 判空后保持 hidden -->
