@@ -7,6 +7,7 @@
     "check:dom": "node tools/check-dom.mjs",
     "check:mutation": "node tools/mutation-check.mjs",
     "check:browser": "node tools/browser-selftest.mjs",
+    "check:webui": "node tools/webui-selftest.mjs",
     "check:share": "node tools/share-image-selftest.mjs",
     "check:desktop": "node tools/desktop-selftest.mjs",
     "check:package": "node tools/verify-package.mjs",

@@ -23,3 +23,6 @@ Thumbs.db
 # 这类东西绝不能进仓库 —— 显式忽略，别指望每次记得手动挑文件
 tools/_*
 tools/_tmp/
+
+# 自检截图产物（check:webui 落盘的样张）
+.shots/
