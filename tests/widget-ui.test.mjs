@@ -347,7 +347,13 @@ test('render：顶部一行把周次、星期、学期名都带上', { skip: !JS
 
 // ==================== 3. boot（按钮与订阅） ====================
 
-test('boot：三个按钮各自接到正确的方法，并主动拉一次数据', { skip: !JSDOM }, async () => {
+test('boot：三个按钮各自接到正确的方法，并主动拉一次数据', { skip: !JSDOM }, async (t) => {
+  let handle = null;
+  // ⚠️ 清理必须挂在 t.after 上，而不是写在断言后面：
+  // 断言一失败，写在后面的 stop() 就被跳过 —— boot 的 1 秒定时器挂在
+  // Node 层（不在 jsdom 窗口里，window.close() 关不掉它），进程永不退出，
+  // 会把 node --test 的整条管线堵死（变异测试就是这么挂满 180 秒的）。
+  t.after(() => { if (handle) handle.stop(); });
   await withDom(async (doc, win) => {
     const now = new Date(2026, 8, 16, 12, 30);
     const view = realView([MATH], null, now);
@@ -360,7 +366,7 @@ test('boot：三个按钮各自接到正确的方法，并主动拉一次数据'
       onUpdate: (cb) => { pushUpdate = cb; return () => {}; }
     };
 
-    const handle = W.boot(api, doc);
+    handle = W.boot(api, doc);
     await new Promise((r) => setTimeout(r, 20));   // 等首次拉取的 Promise 落地
 
     assert.equal(calls.pull, 1, '挂载时就该拉一次，不该干等 30 秒');
@@ -377,12 +383,12 @@ test('boot：三个按钮各自接到正确的方法，并主动拉一次数据'
     assert.equal(typeof pushUpdate, 'function', '应订阅 widget:update');
     pushUpdate(realView([MATH], { days: { '2026-09-16': 'off' } }, now));
     assert.equal(doc.getElementById('card').getAttribute('data-phase'), 'off');
-
-    handle.stop();   // 不 stop 会留下 1 秒定时器，测试进程迟迟不退出
   });
 });
 
-test('boot：主进程不应答时保持上一帧，不把界面清空', { skip: !JSDOM }, async () => {
+test('boot：主进程不应答时保持上一帧，不把界面清空', { skip: !JSDOM }, async (t) => {
+  let handle = null;
+  t.after(() => { if (handle) handle.stop(); });   // 同上：失败也要停定时器
   await withDom(async (doc) => {
     const api = {
       getView: () => Promise.reject(new Error('主进程没应答')),
@@ -390,22 +396,21 @@ test('boot：主进程不应答时保持上一帧，不把界面清空', { skip:
       openMain: () => Promise.resolve(true),
       onUpdate: () => () => {}
     };
-    const handle = W.boot(api, doc);
+    handle = W.boot(api, doc);
     await new Promise((r) => setTimeout(r, 20));
     // 初始就是 loading 态，关键是不能因为一次失败就把卡片画成空白
     assert.ok(doc.getElementById('card').getAttribute('data-phase').length > 0);
     assert.equal(doc.getElementById('wHeadline').textContent, '正在读取课表…');
-    handle.stop();
   });
 });
 
-test('boot：缺少可选接口（onUpdate / 按钮）时不抛异常', { skip: !JSDOM }, async () => {
+test('boot：缺少可选接口（onUpdate / 按钮）时不抛异常', { skip: !JSDOM }, async (t) => {
+  let handle = null;
+  t.after(() => { if (handle) handle.stop(); });   // 同上：失败也要停定时器
   await withDom(async (doc) => {
     const minimal = { getView: () => Promise.resolve(null) };
-    let handle = null;
     assert.doesNotThrow(() => { handle = W.boot(minimal, doc); });
     await new Promise((r) => setTimeout(r, 20));
-    handle.stop();
     assert.doesNotThrow(() => W.boot(null, doc));
     assert.doesNotThrow(() => W.boot(minimal, null));
   });

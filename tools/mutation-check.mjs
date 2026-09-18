@@ -797,12 +797,13 @@ function onlyMatch(i) {
 
 // 50) 位置校验形同虚设 → 屏幕外的坐标被原样采用
 {
-  const anchor = '    if (isVisibleOn(saved, s, areas)) {';
+  // ⚠️ 锚点必须含上下文：光写 isVisibleOn( 会和别处的调用混
+  const anchor = '  if (isVisibleOn(saved, s, areas)) {\n    return { x: Math.round(saved.x), y: Math.round(saved.y) };';
   mutations.push({
     name: '位置校验形同虚设（屏幕外的坐标被原样采用，窗口再也找不回来）',
     file: 'shellLayout',
     apply: (s) => (s.includes(anchor)
-      ? s.replace(anchor, '    if (true) { // MUTANT')
+      ? s.replace(anchor, '  if (true) { // MUTANT\n    return { x: Math.round(saved.x), y: Math.round(saved.y) };')
       : s)
   });
 }
@@ -860,12 +861,13 @@ function onlyMatch(i) {
 
 // 55) 图标候选倒着找（放着清晰的 .ico 不用，用了最糊的兜底 PNG）
 {
-  const anchor = '  for (let i = 0; i < list.length; i++) {';
+  // ⚠️ 锚点必须含上一行：单写 for 循环会先命中 isVisibleOn 里的同款循环
+  const anchor = '  const list = Array.isArray(candidates) ? candidates : [];\n  for (let i = 0; i < list.length; i++) {';
   mutations.push({
     name: '图标候选倒着找（放着清晰的 .ico 不用，用了兜底的 PNG）',
     file: 'shellLayout',
     apply: (s) => (s.includes(anchor)
-      ? s.replace(anchor, '  for (let i = list.length - 1; i >= 0; i--) { // MUTANT')
+      ? s.replace(anchor, '  const list = Array.isArray(candidates) ? candidates : [];\n  for (let i = list.length - 1; i >= 0; i--) { // MUTANT')
       : s)
   });
 }

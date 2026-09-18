@@ -30,7 +30,6 @@
         "to": "web"
       },
       {
-        "comment": "托盘图标必须是独立文件：build/ 目录不进安装包，只在打包时当资源用",
         "from": "build/icon.ico",
         "to": "tray.ico"
       }
