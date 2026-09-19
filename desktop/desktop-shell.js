@@ -151,7 +151,10 @@ function createShell(opts) {
     const pos = clampToDisplays(prefs.widgetPos || null, size, workAreas());
     w.setBounds({ x: pos.x, y: pos.y, width: size.width, height: size.height });
     w.showInactive();  // showInactive 不抢焦点 —— 常驻挂件弹出来抢走输入焦点非常烦人
-    w.setAlwaysOnTop(true);
+    // Windows 上 transparent 无框窗口用默认 level（floating）置顶不可靠：
+    // 实测 hide → 重新 show 后 isAlwaysOnTop() 停在 false（异步竞争丢置顶）。
+    // 'screen-saver' 映射到 Win32 TOPMOST，是 Electron 文档认可的强置顶档位。
+    w.setAlwaysOnTop(true, 'screen-saver');
     prefs.widgetVisible = true;
     savePrefs(prefsFile, prefs);
     pushView();

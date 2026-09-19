@@ -640,9 +640,17 @@ try {
   check('隐藏后状态回到 widgetVisible=false', !!st1 && st1.widgetVisible === false);
   const toggled = await evalMain('window.CourseForgeDesktop.shell.toggleWidget()');
   check('toggleWidget() 能再次打开', toggled === true);
-  const st2 = await evalMain('window.CourseForgeDesktop.shell.status()');
+  // Windows 上 transparent 窗口的 setAlwaysOnTop 异步落定，立即查询可能拿到 false
+  // （实测同一台机器有时 <400ms、有时 4s 都不稳）——轮询最多 4 秒，等不到才算失败。
+  let st2 = null;
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 200));
+    st2 = await evalMain('window.CourseForgeDesktop.shell.status()');
+    if (st2 && st2.widgetVisible === true && st2.alwaysOnTop === true) break;
+  }
   check('再次打开后 widgetVisible=true', !!st2 && st2.widgetVisible === true);
-  check('小组件置顶（常驻挂件的核心属性）', !!st2 && st2.alwaysOnTop === true);
+  check('小组件置顶（常驻挂件的核心属性）', !!st2 && st2.alwaysOnTop === true,
+    st2 ? '轮询后 alwaysOnTop=' + st2.alwaysOnTop : '');
   check('小组件不占任务栏（skipTaskbar 生效）',
     !!st2 && !!st2.bounds && st2.bounds.width === 360 && st2.bounds.height === 196,
     st2 && st2.bounds ? JSON.stringify(st2.bounds) : '');
