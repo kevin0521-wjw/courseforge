@@ -6,6 +6,10 @@
  *   2. 照片 OCR：canvas 现画课表图 → Tesseract chi_sim（含 normalizeOcrText 归一化回归）
  *   3. 教务直连端到端：本地「假教务系统」（正方 V9 登录页同构 + kbList 接口），
  *      真走 edu:open/edu:login/edu:courses 三个 IPC —— 不碰真教务、不用真账号。
+ *
+ * 验打包产物（asar 内 preload + extraResources 的 web，与开发态两条路径）：
+ *   PACKAGED_APP=desktop/release-vXXX/win-unpacked/课表工坊.exe node tools/import-edu-selftest.mjs
+ *
  * 退出码 0 = 可行链路全部跑通。
  */
 'use strict';
@@ -19,7 +23,10 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DESKTOP = path.join(ROOT, 'desktop');
-const ELECTRON = path.join(DESKTOP, 'node_modules', 'electron', 'dist', 'electron.exe');
+// 验打包产物：PACKAGED_APP=desktop/release-vXXX/win-unpacked/课表工坊.exe node tools/import-edu-selftest.mjs
+// 打包版走 app.isPackaged + resources/web + asar 内 preload，与开发态是两条路径 —— 必须各跑一遍
+const PACKAGED = process.env.PACKAGED_APP ? path.resolve(ROOT, process.env.PACKAGED_APP) : '';
+const ELECTRON = PACKAGED || path.join(DESKTOP, 'node_modules', 'electron', 'dist', 'electron.exe');
 const PDF_FIXTURE = path.join(ROOT, 'tests', 'fixtures', 'cjk-timetable-rotated.pdf');
 const SHOTS = path.join(ROOT, '.shots');
 fs.mkdirSync(SHOTS, { recursive: true });
@@ -236,7 +243,9 @@ try {
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.NODE_OPTIONS; // 宿主注入的 shim 会干扰 Electron 子进程网络/启动
   env.COURSEFORGE_SAFE_MODE = '1'; // 沙箱 GPU 崩溃 → 产品自带安全模式（用户真机无需）
-  electron = spawn(ELECTRON, ['.', '--remote-debugging-port=' + cdpPort, '--user-data-dir=' + profile],
+  electron = spawn(ELECTRON,
+    // 打包产物自带应用，不能再传 '.' —— 传了它会把开发目录当成 app
+    [...(PACKAGED ? [] : ['.']), '--remote-debugging-port=' + cdpPort, '--user-data-dir=' + profile],
     { cwd: DESKTOP, env, stdio: 'ignore' });
 
   const target = await waitForPageTarget(cdpPort, 'index.html');
@@ -415,11 +424,13 @@ try {
   if (electron && electron.pid) {
     try { spawnSync('taskkill', ['/PID', String(electron.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* 忽略 */ }
   }
-  try { spawnSync('taskkill', ['/F', '/IM', 'electron.exe'], { stdio: 'ignore' }); } catch { /* 忽略 */ }
+  // 按**实际镜像名**兜底清杀：打包版进程是「课表工坊.exe」，写死 electron.exe 会漏杀，
+  // 留下占着 resources/ 的孤儿进程 —— 下一次打包报 EBUSY，很难联想到是自检没收干净
+  try { spawnSync('taskkill', ['/F', '/IM', path.basename(ELECTRON)], { stdio: 'ignore' }); } catch { /* 忽略 */ }
   try { if (fakeEdu) { try { fakeEdu.closeAllConnections && fakeEdu.closeAllConnections(); } catch {} fakeEdu.close(); } } catch { /* 忽略 */ }
   try { if (profile) fs.rmSync(profile, { recursive: true, force: true }); } catch { /* 留给系统 */ }
 }
 
 const fail = results.filter((r) => !r.ok);
-console.log('\n===== 桌面端导入链路：' + (results.length - fail.length) + '/' + results.length + ' 通过 =====');
+console.log('\n===== 桌面端导入链路（' + (PACKAGED ? '打包产物' : '开发态') + '）：' + (results.length - fail.length) + '/' + results.length + ' 通过 =====');
 process.exit(fail.length ? 1 : 0);
