@@ -1,6 +1,6 @@
 {
   "name": "courseforge",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "课表工坊 CourseForge - 大学生课程表平台（网页版 + Electron 桌面端）",
   "scripts": {
     "test": "node --test",
