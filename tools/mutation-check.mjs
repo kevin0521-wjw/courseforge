@@ -1272,6 +1272,19 @@ function onlyMatch(i) {
   });
 }
 
+// 89) 法定假日自动标记被静默丢弃：dayMark 不再回落 holidayDays，
+//     自动同步成了安慰剂 —— 拉到数据也永远不生效（用户以为放假了课表却照常）
+{
+  mutations.push({
+    name: 'dayMark 不回落 holidayDays（法定自动标记永不生效，同步变安慰剂）',
+    file: 'remind',
+    apply: (s) => s.replace(
+      /v = \(auto && typeof auto === 'object'\) \? auto\[dateStr\] : undefined;\n    return \(v === 'off' \|\| v === 'makeup'\) \? v : '';/,
+      "v = undefined; // MUTANT（不回落自动标记）\n    return (v === 'off' || v === 'makeup') ? v : '';"
+    )
+  });
+}
+
 // ==================== 运行 ====================
 // 保险 0：开始之前先确认工作区是干净的。
 // 曾经发生过：上一次运行被 SIGTERM（超时）强杀，把 // MUTANT 留在了源文件里，

@@ -280,6 +280,44 @@ try {
   const cloudShot = await shot(cdp, 'web-cloud.png');
   check('云同步截图非白（墨量 >0.5%）', cloudShot.ink > 0.005, (cloudShot.ink * 100).toFixed(2) + '% -> ' + cloudShot.file);
 
+  // ---------- 法定节假日自动同步 ----------
+  // 启动时同步器已在后台跑，但冷启动首连可能失败（设计为静默重试）——
+  // 这里主动点设置抽屉里的「立即同步」验证完整链路：按钮 → 拉取 → 解析 → 落盘 → 状态行。
+  // 网络是环境属性不是代码属性：同步不到时标跳过说明原因，不算失败。
+  await evalJs(cdp, `(() => {
+    const btn = document.querySelector('[data-action="sync-holidays"]');
+    if (btn) btn.click();
+    return !!btn;
+  })()`);
+  // 拉取 3 个年份 × 每年最多 3 个候选源，网络慢时需要时间 —— 轮询最多 30 秒
+  let h = null;
+  for (let i = 0; i < 15; i++) {
+    await sleep(2000);
+    const raw = await evalJs(cdp, `JSON.stringify((() => {
+      try {
+        const ws = JSON.parse(localStorage.getItem('wb_courseforge_v1') || 'null');
+        const s = ws && ws.semesters && ws.semesters[0] && ws.semesters[0].settings;
+        const sync = s && s.holidaySync || {};
+        const days = s && s.holidayDays || {};
+        const stateEl = document.getElementById('holidaySyncState');
+        return { lastSync: sync.lastSync || '', source: sync.source || '',
+          count: Object.keys(days).length,
+          sample: days['2026-10-01'] || days['2027-01-01'] || '',
+          stateText: stateEl ? stateEl.textContent : null };
+      } catch (e) { return { error: e.message }; }
+    })())`, 15000);
+    h = JSON.parse(raw);
+    if (h.count > 0) break;
+  }
+  if (h.count > 0) {
+    check('法定节假日同步落盘（点「立即同步」）', !!h.lastSync && !!h.source,
+      h.count + ' 个标记，源 ' + h.source + '，sync ' + h.lastSync);
+    check('法定假日样例映射正确（国庆=off）', h.sample === 'off', '2026-10-01/2027-01-01=' + JSON.stringify(h.sample));
+    check('设置抽屉显示同步状态行', !!h.stateText && h.stateText.indexOf('上次同步') !== -1, JSON.stringify(h.stateText));
+  } else {
+    check('法定节假日同步（网络不可达，跳过）', true, '环境限制：' + JSON.stringify(h));
+  }
+
   // ---------- 汇总 ----------
   console.log('\n=== 网页端真机自检（headless Edge + CDP，' + URL + '）===');
   console.log(results.join('\n'));

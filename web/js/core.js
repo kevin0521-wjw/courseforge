@@ -456,6 +456,31 @@
       }
     }
 
+    // 法定节假日自动同步数据（holidays.js 拉取后写入）：结构与 days 相同，
+    // 判定优先级低于手动 days（见 remind.dayMark）。同样从紧清洗。
+    s.holidayDays = {};
+    if (raw.holidayDays && typeof raw.holidayDays === 'object' && !Array.isArray(raw.holidayDays)) {
+      for (var hk in raw.holidayDays) {
+        if (!Object.prototype.hasOwnProperty.call(raw.holidayDays, hk)) continue;
+        if (!/^\d{4}-\d{1,2}-\d{1,2}$/.test(hk)) continue;
+        var hv = raw.holidayDays[hk];
+        if (hv === 'off' || hv === 'makeup') s.holidayDays[hk] = hv;
+      }
+    }
+    // 同步状态：enabled 默认开（拉不到就静默保持现状，不打扰）；lastSync 是日期、source 记命中源
+    var hs = (raw.holidaySync && typeof raw.holidaySync === 'object') ? raw.holidaySync : {};
+    var lastSync = '';
+    var hsm = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(hs.lastSync || '');
+    if (hsm) {
+      // 宽松日期归一成补零格式，保证 lastSync 与 days 的键格式永远一致
+      lastSync = hsm[1] + '-' + (hsm[2].length < 2 ? '0' + hsm[2] : hsm[2]) + '-' + (hsm[3].length < 2 ? '0' + hsm[3] : hsm[3]);
+    }
+    s.holidaySync = {
+      enabled: hs.enabled !== false,
+      lastSync: lastSync,
+      source: typeof hs.source === 'string' ? String(hs.source).slice(0, 120) : ''
+    };
+
     // 上课提醒配置（默认关闭，见 remind.js 顶部说明）
     var rr = (raw.remind && typeof raw.remind === 'object') ? raw.remind : {};
     var lead = Number(rr.lead);

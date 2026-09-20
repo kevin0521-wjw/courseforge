@@ -157,6 +157,17 @@
         </div>
 
         <div class="field">
+          <span class="field-label">法定节假日自动同步</span>
+          <label class="field-check">
+            <input type="checkbox" id="settingsHolidaySync" name="settingsHolidaySync">
+            <span>自动获取法定节假日与调休日并套用到课表（保存设置生效）</span>
+          </label>
+          <p class="hint" id="holidaySyncState">—</p>
+          <button type="button" class="btn btn-ghost" data-action="sync-holidays">立即同步</button>
+          <p class="hint">数据来自国务院办公厅节假日公告（holiday-cn 每日自动抓取）。你手动标记的放假 / 调休永远优先；取消手动标记后自动回落到法定安排。</p>
+        </div>
+
+        <div class="field">
           <span class="field-label">考试与事件倒计时（跟当前学期走）</span>
           <div id="eventsList" class="events-list"></div>
           <div class="event-form">
@@ -477,6 +488,7 @@
   <script src="js/core.js"></script>
   <script src="js/storage.js"></script>
   <script src="js/remind.js"></script>
+  <script src="js/holidays.js"></script>
   <script src="js/render.js"></script>
   <script src="js/parser.js"></script>
   <script src="js/pdf-layout.js"></script>

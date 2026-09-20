@@ -34,18 +34,30 @@
 
   // ==================== 调休 / 放假日 ====================
   //
-  // settings.days = { 'YYYY-MM-DD': 'off' | 'makeup' }
+  // settings.days        = { 'YYYY-MM-DD': 'off' | 'makeup' }   手动标记（优先）
+  // settings.holidayDays = { 'YYYY-MM-DD': 'off' | 'makeup' }   法定假日自动同步（holidays.js）
   //   'off'    放假：当天不上课，提醒与「今日课程」都跳过
   //   'makeup' 调休补课：本该休息的日子照常按星期几上课
-  // 刻意不做成「联网拉节假日表」：那需要外部接口、需要维护、
-  // 而且各校校历本来就不完全跟着国家法定假日走 —— 让用户点一下更可靠。
+  // 优先级：手动 > 自动 —— 校历与法定假日不一致时用户点一下即可覆盖；
+  // 取消手动标记后自动回落到法定安排。
+  // （2026-09 起接入联网自动同步，旧版「刻意全手动」的策略由 holidays.js 承接；
+  //   手动能力保留，因为各校校历本来就不完全跟着国家法定假日走。）
 
-  /** 某日的标记：'' | 'off' | 'makeup' */
+  /** 某日的标记：'' | 'off' | 'makeup'（手动 days 优先，回落法定同步 holidayDays） */
   function dayMark(settings, dateStr) {
     var days = settings && settings.days;
-    if (!days || typeof days !== 'object') return '';
-    var v = days[dateStr];
+    var v = (days && typeof days === 'object') ? days[dateStr] : undefined;
+    if (v === 'off' || v === 'makeup') return v;
+    var auto = settings && settings.holidayDays;
+    v = (auto && typeof auto === 'object') ? auto[dateStr] : undefined;
     return (v === 'off' || v === 'makeup') ? v : '';
+  }
+
+  /** 某日标记是否来自法定同步（用于 UI 区分「自动」与「手动」徽标） */
+  function markIsAuto(settings, dateStr) {
+    var auto = settings && settings.holidayDays;
+    var v = (auto && typeof auto === 'object') ? auto[dateStr] : undefined;
+    return v === 'off' || v === 'makeup';
   }
 
   /** 切换某日标记；再次传入相同标记表示取消。返回新的 days 对象（不改原对象） */
@@ -420,6 +432,7 @@
     GRACE_MIN: GRACE_MIN,
 
     dayMark: dayMark,
+    markIsAuto: markIsAuto,
     toggleDayMark: toggleDayMark,
     pruneDayMarks: pruneDayMarks,
     isDayOff: isDayOff,

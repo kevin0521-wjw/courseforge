@@ -145,22 +145,30 @@
     var todayDay = businessDay(now);
     var dateText = (now.getMonth() + 1) + '月' + now.getDate() + '日 ' + CF.DAY_NAMES[todayDay - 1];
     var mark = RM ? RM.dayMark(settings, CF.formatDate(now)) : '';
+    // 标记来源：手动 days 优先，否则可能是法定假日自动同步来的 —— chip 上注明，
+    // 用户才不会以为「我没标记过怎么就放假了」
+    var auto = !!(mark && RM && RM.markIsAuto &&
+      RM.markIsAuto(settings, CF.formatDate(now)) &&
+      !(settings.days && settings.days[CF.formatDate(now)]));
+    var autoSuffix = auto ? '<span class="muted"> · 自动</span>' : '';
+    var autoTitle = auto ? ' title="法定节假日（自动同步，手动标记可覆盖）"' : '';
 
     html += '<div class="today-head">';
     html += '<span class="today-title">' + icon('clock') + '今天 · ' + esc(dateText) + '</span>';
     html += '<span class="today-clock" title="每分钟自动刷新">' + esc(hhmm(now)) + '</span>';
     if (mark === 'off') {
-      html += '<span class="chip chip-mark-off">今天放假</span>';
+      html += '<span class="chip chip-mark-off"' + autoTitle + '>今天放假' + autoSuffix + '</span>';
     } else if (mark === 'makeup') {
-      html += '<span class="chip chip-mark-makeup">调休补课</span>';
+      html += '<span class="chip chip-mark-makeup"' + autoTitle + '>调休补课' + autoSuffix + '</span>';
     }
     if (week >= 1 && week <= settings.totalWeeks) {
       html += '<span class="chip">第 ' + week + ' 周</span>';
     }
     html += '</div>';
 
-    // 调休标记：学校的调休安排跟法定假日并不完全一样（周末补课、周中放假都有），
-    // 联网拉节假日表既不准也不必要，让用户点一下最可靠。放假日会连带跳过上课提醒。
+    // 调休标记：法定假日由 holidays.js 自动同步（见设置里的开关），
+    // 但学校的校历跟法定假日并不完全一样 —— 手动标记保留且永远优先，
+    // 点一下即可覆盖自动结果。放假日会连带跳过上课提醒。
     html += '<div class="today-mark">';
     html += '<button class="btn btn-mini' + (mark === 'off' ? ' active' : '') + '" data-action="mark-day-off">今天放假</button>';
     html += '<button class="btn btn-mini' + (mark === 'makeup' ? ' active' : '') + '" data-action="mark-day-makeup">调休补课</button>';

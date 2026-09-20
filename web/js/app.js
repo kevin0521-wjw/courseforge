@@ -15,6 +15,7 @@
   var SI = window.CourseForgeShare;
   var RM = window.CourseForgeRemind;
   var WD = window.CourseForgeWebDav;
+  var CFH = window.CourseForgeHolidays;
 
   // 桌面端「常驻小组件」开关的重新同步函数；网页版恒为 null。
   // 开关状态的真身在主进程（托盘菜单也能改），所以每次打开设置抽屉都要重读一次，
@@ -706,15 +707,23 @@
     persist(); // 保证旧学期的课程/设置是最新的
 
     var cur = state.settings;
+    // 法定假日标记学期无关（全国统一），新学期直接继承，免去等下一轮同步
+    var carry = { holidayDays: cur.holidayDays || {}, holidaySync: cur.holidaySync };
     var settings = keep
       ? CF.normalizeSettings({
         semesterStart: CF.formatDate(start),
         totalWeeks: cur.totalWeeks,
         sectionsPerDay: cur.sectionsPerDay,
         showWeekend: cur.showWeekend,
-        sectionTimes: cur.sectionTimes
+        sectionTimes: cur.sectionTimes,
+        holidayDays: carry.holidayDays,
+        holidaySync: carry.holidaySync
       })
-      : CF.normalizeSettings({ semesterStart: CF.formatDate(start) });
+      : CF.normalizeSettings({
+        semesterStart: CF.formatDate(start),
+        holidayDays: carry.holidayDays,
+        holidaySync: carry.holidaySync
+      });
 
     var courses = copy ? state.courses.map(function (c) {
       // 不带 id 传入 → normalizeCourse 会重新发号，避免两个学期共用同一课程 id
@@ -831,6 +840,7 @@
     syncEventsUI();
     syncCloudUI();
     syncUpdateUI();
+    syncHolidaysUI();
   }
 
   /** 把提醒相关的设置与权限状态刷到设置抽屉里 */
@@ -984,23 +994,26 @@
     var showWeekend = document.getElementById('settingsShowWeekend');
     var remindOn = document.getElementById('settingsRemindEnabled');
     var remindLead = document.getElementById('settingsRemindLead');
+    var holidaySyncEl = document.getElementById('settingsHolidaySync');
     if (!startDate.value) {
       showToast('请选择学期开始日期');
       return;
     }
-    var next = CF.normalizeSettings({
+    var next = rebuildSettings({
       semesterStart: startDate.value,
       totalWeeks: Number(totalWeeks.value),
       sectionsPerDay: Number(sectionsPerDay.value),
       showWeekend: showWeekend ? showWeekend.checked : true,
       sectionTimes: state.settings.sectionTimes,
-      // 调休标记与提醒配置不属于这个表单的可见字段，但必须一起带过去，
-      // 否则「保存设置」会把用户之前标的放假日期静默抹掉
-      days: state.settings.days,
       remind: RM ? RM.remindSettings(state.settings, {
         enabled: remindOn ? remindOn.checked : false,
         lead: remindLead ? Number(remindLead.value) : undefined
-      }) : state.settings.remind
+      }) : state.settings.remind,
+      holidaySync: {
+        enabled: holidaySyncEl ? holidaySyncEl.checked : true,
+        lastSync: (state.settings.holidaySync || {}).lastSync || '',
+        source: (state.settings.holidaySync || {}).source || ''
+      }
     });
     // 学期日期可能被改过，顺手清掉已经落在学期之外的调休标记，免得 days 无限长大
     var before = Object.keys(next.days || {}).length;
@@ -1191,6 +1204,139 @@
   }
 
   /**
+   * 以当前设置为基底做「部分更新」重建。
+   * normalizeSettings 是白名单清洗：调用点漏传的字段会被重置成默认值 ——
+   * 过去每加一个设置字段都要把所有重建调用点的传参清单挨个补一遍，漏了就静默丢数据
+   * （「保存设置抹掉调休标记」就是这么来的）。现在统一从这里走：新增字段只改这一处。
+   */
+  function rebuildSettings(patch) {
+    var s = state.settings;
+    var base = {
+      semesterStart: s.semesterStart,
+      totalWeeks: s.totalWeeks,
+      sectionsPerDay: s.sectionsPerDay,
+      showWeekend: s.showWeekend,
+      sectionTimes: s.sectionTimes,
+      remind: s.remind,
+      days: s.days,
+      holidayDays: s.holidayDays,
+      holidaySync: s.holidaySync
+    };
+    var p = patch || {};
+    for (var k in p) {
+      if (Object.prototype.hasOwnProperty.call(p, k)) base[k] = p[k];
+    }
+    return CF.normalizeSettings(base);
+  }
+
+  // ==================== 法定节假日自动同步 ====================
+  //
+  // 数据源 NateScarlet/holiday-cn（每日抓取国务院公告），同步器 24h 跑一次：
+  //   - 拉今年 + 明年（跨年学期 / 次年安排提前公布，官方 README 建议两份都看）
+  //   - 全部候选源都失败时保持现状静默返回，绝不弹错误打扰 —— 放假标记晚一天到没人在意
+  //   - 结果写 settings.holidayDays（手动 days 永远优先，见 remind.dayMark）
+
+  var HOLIDAY_SYNC_INTERVAL = 24 * 60 * 60 * 1000;
+  var HOLIDAY_RETRY_INTERVAL = 5 * 60 * 1000; // 失败重试：5 分钟后（Edge 冷启动首连失败是常态，不能等 24h）
+  var holidaySyncTimer = null;
+
+  /** 拉单年数据：逐个候选源试，全失败返回 null（不算异常，是常态） */
+  function fetchHolidayYear(year) {
+    if (typeof fetch !== 'function') return Promise.resolve(null);
+    var urls = CFH.sourceUrls(year);
+    var i = 0;
+    function tryNext() {
+      if (i >= urls.length) return Promise.resolve(null);
+      var url = urls[i++];
+      return fetch(url, { cache: 'no-cache' }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      }).then(function (text) {
+        var days = CFH.parseHolidayCn(text);
+        if (!Object.keys(days).length) throw new Error('empty parse');
+        return { days: days, source: url.replace(/^https:\/\//, '').split('/')[0] };
+      }).catch(function () { return tryNext(); });
+    }
+    return tryNext();
+  }
+
+  /**
+   * 同步法定节假日到当前学期。force=true 时忽略开关与 24h 节流（设置里的「立即同步」）。
+   * 返回 Promise<boolean>：true 表示拿到了新数据。
+   */
+  function syncHolidays(force) {
+    if (!CFH) return Promise.resolve(false);
+    var sync = state.settings.holidaySync || {};
+    var today = CF.formatDate(new Date());
+    if (!force && (sync.enabled === false || sync.lastSync === today)) {
+      return Promise.resolve(false);
+    }
+    // 学期结束日：跨年学期（秋季）需要次年文件；再加一个次年，提前拿到新公布的安排
+    var start = CF.parseDate(state.settings.semesterStart) || new Date();
+    var end = CF.addDays(start, (state.settings.totalWeeks || 20) * 7 - 1);
+    var years = CFH.yearsFor(today, CF.formatDate(end));
+
+    var merged = state.settings.holidayDays || {};
+    var source = '';
+    var chain = Promise.resolve();
+    years.forEach(function (y) {
+      chain = chain.then(function () {
+        return fetchHolidayYear(y).then(function (r) {
+          if (!r) return;
+          merged = CFH.mergeInto(merged, r.days);
+          if (!source) source = r.source;
+        });
+      });
+    });
+    return chain.then(function () {
+      if (!source) return false; // 所有源都失败：保持现状，lastSync 不动，下次再试
+      // 学期范围裁剪：换学期 / 改开学日期后，范围外的旧数据不留着无限增长
+      var from = CF.formatDate(CF.mondayOf(start));
+      merged = CFH.pruneToRange(merged, from, CF.formatDate(end));
+      state.settings = rebuildSettings({
+        holidayDays: merged,
+        holidaySync: { enabled: sync.enabled !== false, lastSync: today, source: source }
+      });
+      persist();
+      refreshAll();
+      syncHolidaysUI();
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  function startHolidaysSync() {
+    var attempt = function () {
+      return syncHolidays(false).then(function (ok) {
+        if (!ok) {
+          // 失败不弹错，但也不能干等 24h —— 冷启动网络未热、上课途中断网都是常态，
+          // 5 分钟后原地重试直到成功为止（成功后走 24h 节流）。
+          holidaySyncTimer = setTimeout(function () { attempt(); }, HOLIDAY_RETRY_INTERVAL);
+          if (holidaySyncTimer && typeof holidaySyncTimer.unref === 'function') holidaySyncTimer.unref();
+        }
+        return ok;
+      });
+    };
+    attempt();
+  }
+
+  /** 设置抽屉里的同步状态行：开关勾选 + 最近同步信息 */
+  function syncHolidaysUI() {
+    var box = document.getElementById('settingsHolidaySync');
+    var stateEl = document.getElementById('holidaySyncState');
+    var sync = state.settings.holidaySync || {};
+    if (box) box.checked = sync.enabled !== false;
+    if (!stateEl) return;
+    if (!CFH) { stateEl.textContent = '节假日模块未加载'; return; }
+    var count = Object.keys(state.settings.holidayDays || {}).length;
+    if (!sync.lastSync) {
+      stateEl.textContent = '尚未同步（打开页面后自动进行；失败不打扰，5 分钟后自动重试）';
+      return;
+    }
+    stateEl.textContent = '上次同步 ' + sync.lastSync + '（' + sync.source + '），当前 ' + count
+      + ' 个法定标记。数据源：NateScarlet/holiday-cn（自动抓取国务院公告）。';
+  }
+
+  /**
    * 切换今天的调休标记：'' → 'off'/'makeup'，再点一次取消。
    * 为什么会放在「今天」面板而不是设置里：调休是当天才知道的事，
    * 埋在设置里等于没有 —— 竞品普遍做成「今天/明天一键换课」就是这个道理。
@@ -1199,20 +1345,19 @@
     if (!RM) { showToast('提醒模块未加载，请刷新页面'); return; }
     var today = CF.formatDate(new Date());
     var days = RM.toggleDayMark(state.settings, today, mark);
-    var next = CF.normalizeSettings({
-      semesterStart: state.settings.semesterStart,
-      totalWeeks: state.settings.totalWeeks,
-      sectionsPerDay: state.settings.sectionsPerDay,
-      showWeekend: state.settings.showWeekend,
-      sectionTimes: state.settings.sectionTimes,
-      remind: state.settings.remind,
-      days: days
-    });
+    var next = rebuildSettings({ days: days });
     state.settings = next;
     firedAlerts = {}; // 标记变了，今天该不该提醒也跟着变，去重表必须一起重置
     persist();
     refreshAll();
     var now = RM.dayMark(state.settings, today);
+    // 取消手动标记后若回落到法定同步的标记，明确告诉用户「为什么还在放假」，
+    // 否则「取消标记」看起来像失灵了
+    if (!days[now] && now) {
+      showToast(now === 'off' ? '手动标记已取消；今天仍是法定节假日（自动同步）'
+        : '手动标记已取消；今天按法定调休补课（自动同步）');
+      return;
+    }
     showToast(now === 'off' ? '已标记今天放假，上课提醒会跳过'
       : (now === 'makeup' ? '已标记今天调休补课' : '已取消今天的标记'));
   }
@@ -1607,11 +1752,18 @@
     'parity-all': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'all', state.settings.totalWeeks); renderDraft(); },
     'parity-odd': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'odd', state.settings.totalWeeks); renderDraft(); },
     'parity-even': function () { state.draftWeeks = CF.generateWeeks(1, state.settings.totalWeeks, 'even', state.settings.totalWeeks); renderDraft(); },
-    // 上课提醒 / 调休
+    // 上课提醒 / 调休 / 法定假日同步
     'request-notify': requestNotifyPermission,
     'mark-day-off': function () { onToggleDayMark('off'); },
     'mark-day-makeup': function () { onToggleDayMark('makeup'); },
-    'clear-day-mark': function () { onToggleDayMark(''); }
+    'clear-day-mark': function () { onToggleDayMark(''); },
+    'sync-holidays': function () {
+      if (!CFH) { showToast('节假日模块未加载，请刷新页面'); return; }
+      showToast('正在同步法定节假日…');
+      syncHolidays(true).then(function (ok) {
+        showToast(ok ? '法定节假日已同步' : '同步没拿到数据（网络或数据源不可达，稍后自动重试）');
+      });
+    }
   };
 
   /**
@@ -1811,6 +1963,7 @@
     syncRemindUI();
     runReminderTick();
     runExamTick(); // 首屏同样直查一次考试提醒，理由同上
+    startHolidaysSync(); // 启动同步法定节假日（24h 节流，失败静默）
   }
 
   function bindEvents() {
