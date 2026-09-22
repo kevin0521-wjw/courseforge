@@ -1,0 +1,11 @@
+{
+  "appId": "cn.courseforge.app",
+  "appName": "课表工坊",
+  "webDir": "web",
+  "android": {
+    "allowMixedContent": false
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

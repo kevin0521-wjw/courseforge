@@ -1,0 +1,60 @@
+name: Android APK
+
+# 什么时候构建安卓安装包：
+# - 手动触发（workflow_dispatch）
+# - 打 v* 标签 → 构建并把 APK 挂到对应 GitHub Release
+# - main 分支改动涉及 web/ 或 android/ → 日常冒烟构建（只传 artifact，不发 Release）
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+    paths: ['web/**', 'android/**', 'capacitor.config.json', '.github/workflows/android.yml']
+
+permissions:
+  contents: write  # 打标签时需要写入 Release
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # web 资产由 CI 从真源同步进安卓工程（assets/public 已 gitignore，不入库）
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+      - name: 同步 web 资产到安卓工程
+        run: npx cap sync android
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ubuntu-latest 自带 Android SDK 且已预接受 license，gradle 会自动补缺的平台包
+      - name: 构建 Release APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: 归档 APK
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          cp android/app/build/outputs/apk/release/app-release.apk "CourseForge-${VERSION}.apk"
+          echo "APK_NAME=CourseForge-${VERSION}.apk" >> "$GITHUB_ENV"
+          ls -l "CourseForge-${VERSION}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: ${{ env.APK_NAME }}
+
+      # 打了 v* 标签才发布：把 APK 挂到对应 Release（不存在则创建）
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: ${{ env.APK_NAME }}

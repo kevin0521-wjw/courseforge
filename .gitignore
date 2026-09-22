@@ -26,3 +26,4 @@ tools/_tmp/
 
 # 自检截图产物（check:webui 落盘的样张）
 .shots/
+/assets/

@@ -1,7 +1,7 @@
 {
   "name": "courseforge",
-  "version": "0.2.4",
-  "description": "课表工坊 CourseForge - 大学生课程表平台（网页版 + Electron 桌面端）",
+  "version": "0.3.0",
+  "description": "课表工坊 CourseForge - 大学生课程表平台（网页版 + Electron 桌面端 + Android）",
   "scripts": {
     "test": "node --test",
     "check:dom": "node tools/check-dom.mjs",
@@ -20,11 +20,21 @@
     "pack:desktop": "cd desktop && npm run pack",
     "dist:desktop": "cd desktop && npm run dist",
     "start:web": "node tools/serve.mjs",
-    "tunnel": "node tools/tunnel.mjs"
+    "tunnel": "node tools/tunnel.mjs",
+    "cap:sync": "npx cap sync android",
+    "android:icons": "python tools/make-android-icons.py"
   },
-  "keywords": ["timetable", "course-schedule", "electron", "零依赖"],
+  "keywords": [
+    "timetable",
+    "course-schedule",
+    "electron",
+    "零依赖"
+  ],
   "license": "MIT",
   "devDependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/cli": "^8.5.2",
+    "@capacitor/core": "^8.5.2",
     "jsdom": "^30.0.0",
     "pdfjs-dist": "3.11.174"
   }

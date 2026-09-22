@@ -1,0 +1,6 @@
+# 二进制绝不参与文本转换（autocrlf 的教训：按字节取哈希/执行的东西最怕被改行尾）
+*.png binary
+*.jar binary
+*.keystore binary
+# Linux CI（GitHub Actions）直接执行 gradlew，仓库内必须保持 LF
+android/gradlew text eol=lf

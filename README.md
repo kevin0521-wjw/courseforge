@@ -193,6 +193,27 @@ ELECTRON_BUILDER_BINARIES_MIRROR=https://registry.npmmirror.com/-/binary/electro
 npm run dist -- -c.directories.output=release-2
 ```
 
+### 方式三：Android 安装包（v0.3.0 起）
+
+到 [Releases](https://github.com/kevin0521-wjw/courseforge/releases/latest) 下载
+`CourseForge-<版本>.apk` 直接安装（首次需允许「安装未知应用」）。
+
+- 数据与网页版一样**完全本地存储**（WebView 内的 localStorage），不联网也能用；卸载即清空。
+- App 内数据与网页版/桌面端**各自独立**，不互通（都是本地存储，没有云端账号）。
+- 节假日同步、导入等联网能力照常可用。
+
+构建与维护（给二次开发者）：
+
+- 技术方案：[Capacitor](https://capacitorjs.com) 包壳 `web/`，本机**不需要** Android SDK ——
+  APK 由 `.github/workflows/android.yml` 在 GitHub Actions 云端构建；打 `v*` 标签自动把
+  APK 挂到对应 Release，push 到 main 也日常冒烟构建（产物在 workflow artifact 里）。
+- 改了 `web/` 之后：`npm run cap:sync` 同步进安卓工程（CI 也会自动做，本地跑只为提前验证）。
+- 换启动图标：改 `web/icon.svg` → 重跑 `npm run icons` → `npm run android:icons`
+  （纯 PIL 生成全套 mipmap/启动屏，不需要 sharp / Android 工具链）。
+- 签名取舍：自发布 FOSS 应用，发布签名库随仓库入库（`android/app/courseforge.keystore`，
+  密码明文在 `android/app/build.gradle`）。好处是任何人可复现构建、更新包能直接覆盖安装；
+  代价是别人也能用这个签名造包 —— 正式分发请换成自己的 keystore + GitHub Secrets。
+
 ## 📦 数据与备份
 
 | 操作 | 位置 | 说明 |
