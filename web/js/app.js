@@ -1673,7 +1673,11 @@
         reloaded = true;
         location.reload();
       });
-      navigator.serviceWorker.register('sw.js').catch(function () { /* 离线能力非核心，失败不影响使用 */ });
+      // 注意用显式 scope（当前目录），不要依赖默认值：
+      // 默认 scope 是 SW 脚本所在目录，子路径部署（如 GitHub Pages 的
+      // /courseforge/）下两者恰好一致；但显式写出后，路由方式变更时不会
+      // 因为「默认值悄悄变成别的」而让 SW 作用域跑到整个站点根上。
+      navigator.serviceWorker.register('sw.js', { scope: './' }).catch(function () { /* 离线能力非核心，失败不影响使用 */ });
     } catch (e) { /* 忽略 */ }
   }
 

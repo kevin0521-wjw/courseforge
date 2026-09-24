@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 📖 先读 README
+    url: https://github.com/kevin0521-wjw/courseforge#readme
+    about: 功能说明、快速开始、导入课表的四种方式都在这里
+  - name: 🤝 参与开发前请读贡献指南
+    url: https://github.com/kevin0521-wjw/courseforge/blob/main/CONTRIBUTING.md
+    about: 项目的四条铁律、代码约定与提 PR 的要求

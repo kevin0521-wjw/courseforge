@@ -1,0 +1,78 @@
+name: 🐞 Bug 反馈
+description: 报告一个可复现的问题（崩溃、显示错误、功能失效等）
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量把信息填完整 —— 这个项目由单人维护，
+        一份能直接复现的报告能省下大量来回追问的时间。
+
+        ⚠️ **提交前请确认截图/文本里已抹掉学号、姓名、教务账号等个人信息。**
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 你使用的是哪个版本
+      options:
+        - 网页版（双击 web/index.html 或本地服务器打开）
+        - 单文件版（dist/CourseForge-standalone.html）
+        - 桌面端（Electron 安装包 / 免安装版）
+        - 安卓端（APK）
+        - 手机浏览器 / PWA
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本号
+      description: 桌面端与安卓端在「设置」里可以看到；网页版看仓库 release 或你拉取的提交
+      placeholder: 例如 v0.3.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: 例如 Windows 11 23H2 / Android 15 / iOS 18
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 越具体越好，从打开应用开始一步步写
+      placeholder: |
+        1. 打开课表，切到第 3 周
+        2. 点「导入课表」→ 选「粘贴文本」
+        3. 粘贴以下课表文本……
+        4. 点「解析文本」
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 有报错信息或截图的话请一并贴上
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息（可选）
+      description: 例如课表来源（教务系统名称）、是否开启 WebDAV 同步、是否只在特定周次出现
+    validations:
+      required: false

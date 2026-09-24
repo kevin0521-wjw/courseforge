@@ -1,0 +1,46 @@
+# 把 web/ 目录作为静态站点发布到 GitHub Pages。
+#
+# 为什么直接发布 web/ 而不是先构建：
+#   web/ 本身就是成品（零依赖、零构建），内部所有引用都是 ./ 相对路径，
+#   放在 /courseforge/ 这种子路径下依然正确；manifest 的 start_url/scope
+#   也是 ./，因此 PWA 在子路径下同样可用。
+#   先跑一次 verify 是为了拦住「改了 web/ 但没跑护栏」的提交 ——
+#   部署一个坏掉的版本比不部署更糟。
+name: Deploy Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只允许一个部署，且不取消进行中的那个 ——
+# Pages 部署被中途打断会留下半旧半新的站点。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci --no-audit --no-fund
+      - name: 跑完整校验（测试 + DOM 检查 + 变异测试 + 打包产物校验）
+        run: npm run verify
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - uses: actions/deploy-pages@v4

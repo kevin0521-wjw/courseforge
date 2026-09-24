@@ -5,6 +5,12 @@
 [![CI](https://github.com/kevin0521-wjw/courseforge/actions/workflows/ci.yml/badge.svg)](https://github.com/kevin0521-wjw/courseforge/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Node](https://img.shields.io/badge/node-%E2%89%A522-green)
+[![Stars](https://img.shields.io/github/stars/kevin0521-wjw/courseforge?style=flat&label=stars)](https://github.com/kevin0521-wjw/courseforge/stargazers)
+[![Release](https://img.shields.io/github/v/release/kevin0521-wjw/courseforge?label=release)](https://github.com/kevin0521-wjw/courseforge/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/kevin0521-wjw/courseforge/total?label=downloads)](https://github.com/kevin0521-wjw/courseforge/releases)
+[![Last Commit](https://img.shields.io/github/last-commit/kevin0521-wjw/courseforge?label=last%20commit)](https://github.com/kevin0521-wjw/courseforge/commits/main)
+[![Repo Size](https://img.shields.io/github/repo-size/kevin0521-wjw/courseforge?label=size)](https://github.com/kevin0521-wjw/courseforge)
+[![Platform](https://img.shields.io/badge/platform-web%20%7C%20windows%20%7C%20android-lightgrey)](#-快速开始)
 
 一份属于自己的、不依赖任何教务系统的课程表。**网页版**双击即用，**桌面端**（Electron）一键启动，数据 100% 存在本地，不上传任何服务器。
 
@@ -34,7 +40,7 @@
 - 📤 **一键备份恢复**：导出 JSON 备份、导入恢复，换设备迁移只需一个文件
 - 📱 **移动端适配**：手机浏览器打开即可使用；触屏点击区 ≥ 44px、输入字号 ≥ 16px
 - 📲 **PWA**：可添加到手机主屏幕当 App 用，Service Worker 离线缓存，断网可打开；图标各尺寸齐备（含 iOS 专用的 PNG 与 Android 自适应 maskable）
-- 🧪 **自带测试**：579 项 `node --test` 测试（含 jsdom 全流程与真机页面夹具回归），CI 自动跑
+- 🧪 **自带测试**：598 项 `node --test` 测试（含 jsdom 全流程与真机页面夹具回归），CI 自动跑
 
 ## 🖼 界面预览
 
@@ -428,6 +434,20 @@ npm run verify           # 测试 + 静态检查 + 变异测试 + 打包冒烟 +
 - 新增逻辑优先放进 `core.js`（纯函数）并补充测试
 - 移动端适配是硬性要求：按钮点击区 ≥ 44px，输入框字号 ≥ 16px
 - 渲染层输出用户数据必须经过 `esc()` 转义
+
+完整的四条铁律、代码约定与提 PR 要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 🌐 在线试用
+
+不想下载？直接打开部署在 GitHub Pages 上的网页版：
+
+**<https://kevin0521-wjw.github.io/courseforge/>**
+
+零依赖、无需注册，数据只存在你自己的浏览器里（`localStorage`）。
+想装到手机主屏当 App 用，用手机浏览器打开同一地址后选「添加到主屏幕」即可。
+
+> 网页版受浏览器同源策略限制，**没有**「教务系统直连」能力（那项只做在桌面端）；
+> 网页版请用「粘贴文本 → 解析」导入课表，识别效果完全相同。
 
 ## 📄 协议
 
